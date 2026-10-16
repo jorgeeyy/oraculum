@@ -20,3 +20,15 @@ class DatabaseNotConfiguredError(Exception):
 
 class StoredFileMissingError(Exception):
     """A document record exists but its stored file is missing on disk."""
+
+
+class EmbeddingNotConfiguredError(Exception):
+    """OPENAI_API_KEY is missing or the embedding model is unavailable."""
+
+
+class EmbeddingServiceError(Exception):
+    """The embedding API failed after exhausting bounded retries."""
+
+
+class VectorStoreError(Exception):
+    """A vector store operation failed (indexing, querying, or deletion)."""

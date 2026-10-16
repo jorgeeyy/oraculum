@@ -16,15 +16,20 @@ from app.schemas.documents import (
     UploadDocumentResponse,
 )
 from app.services.chunking import chunk_pages
+from app.services.embeddings import Embedder
 from app.services.errors import (
     DatabaseNotConfiguredError,
+    EmbeddingNotConfiguredError,
+    EmbeddingServiceError,
     EmptyExtractionError,
     FileTooLargeError,
     StoredFileMissingError,
     UnsupportedFileTypeError,
+    VectorStoreError,
 )
 from app.services.storage import DocumentStorage
 from app.services.text_extraction import extract_pages, validate_upload
+from app.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,19 @@ _READ_CHUNK_BYTES = 1024 * 1024
 
 def get_storage(settings: Settings = Depends(get_settings)) -> DocumentStorage:
     return DocumentStorage(settings.uploads_path)
+
+
+def get_embedder(settings: Settings = Depends(get_settings)) -> Embedder:
+    """Build the embedder eagerly so a missing API key surfaces as 503, not 500."""
+    try:
+        return Embedder(
+            api_key=settings.openai_api_key,
+            model=settings.embedding_model,
+            batch_size=settings.embedding_batch_size,
+            max_retries=settings.embedding_max_retries,
+        )
+    except EmbeddingNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _session_dep() -> Iterator[Session]:
@@ -89,6 +107,8 @@ async def upload_document(
     file: UploadFile = File(...),
     storage: DocumentStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
+    embedder: Embedder = Depends(get_embedder),
+    store: VectorStore = Depends(get_vector_store),
     session: Session = Depends(_session_dep),
 ) -> UploadDocumentResponse:
     data = await _read_bounded(file, settings.max_file_size_bytes)
@@ -139,11 +159,37 @@ async def upload_document(
             status_code=500, detail="Document ingestion failed unexpectedly."
         ) from exc
 
-    repositories.complete_document(session, document_id, len(chunks))
+    # Indexing: embed chunks and store vectors. The document is only marked
+    # completed after the vectors are safely in the store.
+    try:
+        vectors = embedder.embed([chunk.text for chunk in chunks])
+        store.upsert_chunks(chunks, vectors)
+    except (EmbeddingNotConfiguredError, EmbeddingServiceError, VectorStoreError) as exc:
+        repositories.fail_document(session, document_id, str(exc))
+        logger.warning("Indexing failed for document %s: %s", document_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail={"document_id": document_id, "message": str(exc)},
+        ) from exc
+    except Exception as exc:  # unexpected embedding/indexing failure
+        repositories.fail_document(session, document_id, f"Unexpected error: {exc}")
+        logger.exception("Unexpected indexing failure for %s", document_id)
+        raise HTTPException(
+            status_code=500, detail="Document indexing failed unexpectedly."
+        ) from exc
+
+    repositories.complete_document(
+        session,
+        document_id,
+        len(chunks),
+        embedding_model=embedder.model,
+        chunk_size_tokens=settings.chunk_size_tokens,
+        chunk_overlap_tokens=settings.chunk_overlap_tokens,
+    )
     record = repositories.get_document(session, document_id)
 
     logger.info(
-        "Ingested document %s (%s, %d bytes, %d chunks)",
+        "Ingested and indexed document %s (%s, %d bytes, %d chunks)",
         document_id,
         filename,
         len(data),
@@ -211,12 +257,28 @@ def get_document_chunks(
 def delete_document(
     document_id: str,
     storage: DocumentStorage = Depends(get_storage),
+    store: VectorStore = Depends(get_vector_store),
     session: Session = Depends(_session_dep),
 ) -> DeleteResponse:
     document_id = _parse_document_id(document_id)
     record = repositories.get_document(session, document_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+    # Vectors first: if this fails nothing is removed, so the record stays
+    # consistent and the deletion can simply be retried.
+    try:
+        store.delete_document_vectors(document_id)
+    except VectorStoreError as exc:
+        logger.exception("Vector cleanup failed for %s", document_id)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Could not remove the indexed vectors for this document. "
+                "Nothing was deleted; try again."
+            ),
+        ) from exc
+
     repositories.delete_document(session, document_id)
 
     try:

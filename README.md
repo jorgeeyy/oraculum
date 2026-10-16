@@ -2,15 +2,15 @@
 
 A production-style Retrieval-Augmented Generation (RAG) knowledge assistant. It ingests documents (PDF, TXT, Markdown), indexes them in a vector database, and answers questions grounded in the retrieved evidence with source citations — or states clearly when the documents do not contain enough information.
 
-This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 1: document ingestion and chunking** — documents can be uploaded, stored, extracted, and chunked via the API. Embeddings, vector indexing, retrieval, and answer generation are not implemented yet.
+This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 2: embeddings and vector indexing** — uploaded documents are extracted, chunked, embedded with OpenAI, and indexed in a local ChromaDB store with citation metadata. Retrieval and answer generation come in the next phases.
 
 ## Stack
 
 - **Language:** Python 3.13
 - **API:** FastAPI + Uvicorn
 - **Package/dependency manager:** [uv](https://docs.astral.sh/uv/)
-- **LLM and embeddings:** OpenAI API
-- **Vector database:** Pinecone
+- **LLM and embeddings:** OpenAI API (`text-embedding-3-small`)
+- **Vector database:** ChromaDB (local, persistent)
 - **Relational database:** PostgreSQL via SQLAlchemy 2.0 + Alembic
 - **Validation:** Pydantic / pydantic-settings
 - **Testing:** pytest + HTTPX
@@ -42,13 +42,14 @@ Copy-Item .env.example .env
 | Variable | Purpose |
 |---|---|
 | `OPENAI_API_KEY` | OpenAI API key for embeddings and answer generation |
-| `PINECONE_API_KEY` | Pinecone API key for vector storage |
-| `PINECONE_INDEX_NAME` | Name of the Pinecone index to use |
 | `DATABASE_URL` | PostgreSQL connection string (`postgresql://user:pass@host:port/db`) |
 | `CHUNK_SIZE_TOKENS` | Target chunk size in tokens (default `600`) |
 | `CHUNK_OVERLAP_TOKENS` | Overlap between adjacent chunks (default `80`) |
 | `MAX_FILE_SIZE_BYTES` | Upload size limit (default `10485760`) |
 | `UPLOADS_DIR` | Where uploaded files are stored (default `data/uploads`) |
+| `EMBEDDING_MODEL` | OpenAI embedding model (default `text-embedding-3-small`) |
+| `EMBEDDING_BATCH_SIZE` | Texts per embedding API call (default `100`) |
+| `CHROMA_DIR` | ChromaDB persistence directory (default `data/chroma`) |
 
 `.env` is git-ignored. Never commit real keys.
 
@@ -99,11 +100,11 @@ uv run uvicorn app.main:app --reload
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/documents` | Upload a PDF/TXT/Markdown file; returns the document record plus its chunks |
+| `POST` | `/documents` | Upload a PDF/TXT/Markdown file; extracts, chunks, embeds, and indexes it |
 | `GET` | `/documents` | List ingested documents and their statuses |
-| `GET` | `/documents/{id}` | Document record and ingestion status |
+| `GET` | `/documents/{id}` | Document record, ingestion status, and indexing config used |
 | `GET` | `/documents/{id}/chunks` | Re-chunk a stored document with the current chunking configuration |
-| `DELETE` | `/documents/{id}` | Delete a document record and its stored file |
+| `DELETE` | `/documents/{id}` | Remove a document's vectors, stored file, and record |
 | `GET` | `/health` | Basic service health check |
 
 Try it with the committed sample documents:
@@ -112,6 +113,9 @@ Try it with the committed sample documents:
 # via Swagger UI: open http://127.0.0.1:8000/docs and upload samples/employee_handbook.md
 # or via curl:
 curl -F "file=@samples/employee_handbook.md" http://127.0.0.1:8000/documents
+
+# verify semantic retrieval against the local index:
+uv run python scripts/verify_index.py "How many days of annual leave do employees receive?"
 ```
 
 ## Test
@@ -140,18 +144,24 @@ rag-application/
 │   └── services/
 │       ├── text_extraction.py    # PDF/TXT/Markdown → pages (magic-byte validation)
 │       ├── chunking.py           # Pages → token-bounded overlapping chunks (tiktoken)
+│       ├── embeddings.py         # Batched OpenAI embeddings with bounded retries
+│       ├── vector_store.py       # Persistent ChromaDB collection (upsert/query/delete)
 │       ├── storage.py            # Safe UUID-based file storage under data/uploads
-│       └── errors.py             # Ingestion and storage error types
+│       └── errors.py             # Ingestion, storage, and indexing error types
 ├── alembic/
 │   ├── env.py                    # Alembic env wired to app settings
 │   └── versions/                 # Generated migration files
 ├── alembic.ini                   # Alembic config (no secrets)
 ├── samples/                      # Fictional sample documents for manual testing
+├── scripts/
+│   └── verify_index.py           # Semantic retrieval smoke test against the index
 ├── tests/
 │   ├── conftest.py
 │   ├── test_health.py
 │   ├── test_text_extraction.py
 │   ├── test_chunking.py
+│   ├── test_embeddings.py
+│   ├── test_vector_store.py
 │   └── test_documents_api.py
 ├── .env.example
 ├── pyproject.toml
@@ -162,7 +172,7 @@ rag-application/
 
 - [x] Phase 0 — Repository and environment setup
 - [x] Phase 1 — Document ingestion and chunking
-- [ ] Phase 2 — Embeddings and Pinecone indexing
+- [x] Phase 2 — Embeddings and vector indexing
 - [ ] Phase 3 — Retrieval
 - [ ] Phase 4 — Grounded answer generation and citations
 - [ ] Phase 5 — API, persistence, and reliability
@@ -171,7 +181,12 @@ rag-application/
 
 Note: document record persistence (PostgreSQL) and the `/documents` endpoints were
 pulled forward from Phase 5 into Phase 1 as a deliberate deviation from the guide's
-phase order. Vector indexing and chat endpoints remain scheduled for later phases.
+phase order.
+
+Deviation: the guide specifies Pinecone as the vector store; this project uses
+ChromaDB instead (free, local, no external account) while filling the same role —
+vector persistence, metadata filtering for scoped deletion, and citation metadata
+for retrieval. Chat endpoints remain scheduled for later phases.
 
 ## Security notes
 

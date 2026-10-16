@@ -16,6 +16,9 @@ def _to_record(doc: Document) -> DocumentRecord:
         chunk_count=doc.chunk_count,
         status=doc.status,
         error_message=doc.error_message,
+        embedding_model=doc.embedding_model,
+        chunk_size_tokens=doc.chunk_size_tokens,
+        chunk_overlap_tokens=doc.chunk_overlap_tokens,
         created_at=doc.created_at,
     )
 
@@ -49,11 +52,27 @@ def get_document(session: Session, document_id: str) -> DocumentRecord | None:
     return _to_record(doc) if doc else None
 
 
-def complete_document(session: Session, document_id: str, chunk_count: int) -> None:
+def complete_document(
+    session: Session,
+    document_id: str,
+    chunk_count: int,
+    *,
+    embedding_model: str,
+    chunk_size_tokens: int,
+    chunk_overlap_tokens: int,
+) -> None:
+    """Mark a document completed and record the indexing config it was built with."""
     session.execute(
         update(Document)
         .where(Document.id == uuid.UUID(document_id))
-        .values(status="completed", chunk_count=chunk_count, error_message=None)
+        .values(
+            status="completed",
+            chunk_count=chunk_count,
+            error_message=None,
+            embedding_model=embedding_model,
+            chunk_size_tokens=chunk_size_tokens,
+            chunk_overlap_tokens=chunk_overlap_tokens,
+        )
     )
     session.commit()
 

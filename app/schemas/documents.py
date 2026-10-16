@@ -25,6 +25,9 @@ class DocumentRecord(BaseModel):
     chunk_count: int | None = None
     status: str
     error_message: str | None = None
+    embedding_model: str | None = None
+    chunk_size_tokens: int | None = None
+    chunk_overlap_tokens: int | None = None
     created_at: datetime
 
 

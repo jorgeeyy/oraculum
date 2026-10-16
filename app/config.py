@@ -26,8 +26,6 @@ class Settings(BaseSettings):
 
     app_name: str = "rag-knowledge-assistant"
     openai_api_key: str | None = None
-    pinecone_api_key: str | None = None
-    pinecone_index_name: str | None = None
     database_url: str | None = None
 
     # Ingestion (Phase 1)
@@ -36,10 +34,26 @@ class Settings(BaseSettings):
     max_file_size_bytes: int = 10 * 1024 * 1024
     uploads_dir: str = "data/uploads"
 
+    # Embeddings and vector indexing (Phase 2)
+    embedding_model: str = "text-embedding-3-small"
+    embedding_batch_size: int = 100
+    embedding_max_retries: int = 3
+    chroma_dir: str = "data/chroma"
+    vector_collection: str = "documents"
+
     @property
     def uploads_path(self) -> Path:
         """Absolute uploads directory; relative values resolve to the project root."""
-        path = Path(self.uploads_dir)
+        return self._project_path(self.uploads_dir)
+
+    @property
+    def chroma_path(self) -> Path:
+        """Absolute ChromaDB persistence directory anchored to the project root."""
+        return self._project_path(self.chroma_dir)
+
+    @staticmethod
+    def _project_path(value: str) -> Path:
+        path = Path(value)
         if not path.is_absolute():
             path = PROJECT_ROOT / path
         return path

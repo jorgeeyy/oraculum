@@ -139,3 +139,103 @@ class TestDocumentLifecycle:
 
         assert smaller["chunk_count"] > baseline["chunk_count"]
         assert smaller["chunk_size_tokens"] == 50
+
+
+class TestIndexing:
+    def test_upload_embeds_and_indexes_chunks(
+        self,
+        client: TestClient,
+        db_conn,
+        fake_embedder,
+        fake_vector_store,
+    ) -> None:
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 201, response.text
+        body = response.json()
+        document_id = body["id"]
+
+        # provenance is recorded on the document
+        assert body["status"] == "completed"
+        assert body["embedding_model"] == "test-embedding-model"
+        assert body["chunk_size_tokens"] == get_settings().chunk_size_tokens
+        assert body["chunk_overlap_tokens"] == get_settings().chunk_overlap_tokens
+
+        # the embedder saw the exact chunk texts
+        chunk_texts = [c["text"] for c in body["chunks"]]
+        assert fake_embedder.batches == [chunk_texts]
+
+        # the store received one vector per chunk, with matching citations
+        assert len(fake_vector_store.upserts) == 1
+        chunks, embeddings = fake_vector_store.upserts[0]
+        assert len(chunks) == len(embeddings) == body["chunk_count"]
+        assert chunks[0].document_id == document_id
+
+    def test_embedding_failure_marks_document_failed(
+        self, client: TestClient, db_conn, fake_embedder
+    ) -> None:
+        from app.services.errors import EmbeddingServiceError
+
+        def boom(texts):
+            raise EmbeddingServiceError("Embedding request failed after 3 attempts.")
+
+        fake_embedder.embed = boom  # type: ignore[method-assign]
+
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        document_id = detail["document_id"]
+        assert "after 3 attempts" in detail["message"]
+
+        record = client.get(f"/documents/{document_id}").json()
+        assert record["status"] == "failed"
+        assert "after 3 attempts" in record["error_message"]
+        assert record["embedding_model"] is None
+
+    def test_vector_upsert_failure_marks_document_failed(
+        self, client: TestClient, db_conn, fake_vector_store
+    ) -> None:
+        from app.services.errors import VectorStoreError
+
+        fake_vector_store.fail_upsert = VectorStoreError("index write failed")
+
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 503
+        document_id = response.json()["detail"]["document_id"]
+
+        record = client.get(f"/documents/{document_id}").json()
+        assert record["status"] == "failed"
+        assert "index write failed" in record["error_message"]
+
+    def test_delete_removes_vectors_before_record(
+        self,
+        client: TestClient,
+        db_conn,
+        fake_vector_store,
+    ) -> None:
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        document_id = response.json()["id"]
+
+        deleted = client.delete(f"/documents/{document_id}")
+        assert deleted.status_code == 200
+        assert fake_vector_store.deletes == [document_id]
+        assert client.get(f"/documents/{document_id}").status_code == 404
+
+    def test_delete_vector_failure_keeps_document_retryable(
+        self, client: TestClient, db_conn, fake_vector_store
+    ) -> None:
+        from app.services.errors import VectorStoreError
+
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        document_id = response.json()["id"]
+
+        fake_vector_store.fail_delete = VectorStoreError("chroma locked")
+        failed = client.delete(f"/documents/{document_id}")
+        assert failed.status_code == 503
+        # nothing was removed: the record survives for a retry
+        assert client.get(f"/documents/{document_id}").status_code == 200
+
+        fake_vector_store.fail_delete = None
+        retried = client.delete(f"/documents/{document_id}")
+        assert retried.status_code == 200
+        assert fake_vector_store.deletes == [document_id]
+        assert client.get(f"/documents/{document_id}").status_code == 404
