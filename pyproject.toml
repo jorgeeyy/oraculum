@@ -1,0 +1,23 @@
+[project]
+name = "rag-application"
+version = "0.1.0"
+description = "Production-style RAG knowledge assistant"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.143.2",
+    "httpx>=0.28.1",
+    "openai>=3.31.0",
+    "pinecone>=10.0.0",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.16.0",
+    "pypdf>=6.21.0",
+    "pytest>=9.1.1",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
