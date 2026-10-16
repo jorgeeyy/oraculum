@@ -5,6 +5,7 @@ description = "Production-style RAG knowledge assistant"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.20.0",
     "fastapi>=0.143.2",
     "httpx>=0.28.1",
     "openai>=3.31.0",
@@ -14,6 +15,8 @@ dependencies = [
     "pypdf>=6.21.0",
     "pytest>=9.1.1",
     "python-multipart>=0.0.32",
+    "sqlalchemy>=2.0",
+    "tiktoken>=0.14.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
