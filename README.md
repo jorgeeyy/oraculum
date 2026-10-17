@@ -2,7 +2,7 @@
 
 A production-style Retrieval-Augmented Generation (RAG) knowledge assistant. It ingests documents (PDF, TXT, Markdown), indexes them in a vector database, and answers questions grounded in the retrieved evidence with source citations — or states clearly when the documents do not contain enough information.
 
-This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 2: embeddings and vector indexing** — uploaded documents are extracted, chunked, embedded with OpenAI, and indexed in a local ChromaDB store with citation metadata. Retrieval and answer generation come in the next phases.
+This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 4: grounded answer generation** — `POST /chat` answers questions from retrieved evidence using a configurable OpenAI chat model, citing only the chunks it actually received; weak or missing evidence produces an explicit insufficient-evidence refusal instead of a guess.
 
 ## Stack
 
@@ -50,6 +50,9 @@ Copy-Item .env.example .env
 | `EMBEDDING_MODEL` | OpenAI embedding model (default `text-embedding-3-small`) |
 | `EMBEDDING_BATCH_SIZE` | Texts per embedding API call (default `100`) |
 | `CHROMA_DIR` | ChromaDB persistence directory (default `data/chroma`) |
+| `CHAT_MODEL` | OpenAI chat model for answers (default `gpt-4o-mini`) |
+| `CHAT_MAX_TOKENS` | Max tokens per generated answer (default `500`) |
+| `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |
 
 `.env` is git-ignored. Never commit real keys.
 
@@ -105,6 +108,8 @@ uv run uvicorn app.main:app --reload
 | `GET` | `/documents/{id}` | Document record, ingestion status, and indexing config used |
 | `GET` | `/documents/{id}/chunks` | Re-chunk a stored document with the current chunking configuration |
 | `DELETE` | `/documents/{id}` | Remove a document's vectors, stored file, and record |
+| `POST` | `/retrieve` | Semantic search: question in, top-k chunks out with scores and citations |
+| `POST` | `/chat` | Grounded Q&A: short answer with resolved source citations, or an explicit insufficient-evidence refusal |
 | `GET` | `/health` | Basic service health check |
 
 Try it with the committed sample documents:
@@ -114,9 +119,44 @@ Try it with the committed sample documents:
 # or via curl:
 curl -F "file=@samples/employee_handbook.md" http://127.0.0.1:8000/documents
 
-# verify semantic retrieval against the local index:
-uv run python scripts/verify_index.py "How many days of annual leave do employees receive?"
+# semantic retrieval (no LLM involved):
+curl -X POST http://127.0.0.1:8000/retrieve -H "Content-Type: application/json" `
+  -d "{\"question\": \"How many days of annual leave?\"}"
+
+# grounded answer with citations:
+curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" `
+  -d "{\"question\": \"How many days of annual leave?\"}"
+
+# or the standalone smoke script:
+uv run python scripts/verify_index.py "How many days of annual leave?"
 ```
+
+### How grounding works
+
+1. The question is embedded and the top-k chunks are retrieved (same pipeline as `/retrieve`).
+2. No evidence at all -> a deterministic refusal; the LLM is never called.
+3. Evidence is passed to the chat model as clearly-labelled untrusted data; the trusted
+   system prompt forbids following instructions found inside documents and requires
+   structured JSON output (answer + cited evidence labels).
+4. Citations are resolved in application code against the real retrieved chunks:
+   invented labels are dropped, and an "answered" result with no resolvable citation
+   is downgraded to `insufficient_evidence` so uncited claims are never presented as
+   grounded facts.
+
+## Retrieval evaluation
+
+A labelled dataset (`evals/dataset.jsonl`, 12 questions across factual, multi-document,
+distractor, and no-answer categories) is scored with Recall@3, Recall@5, MRR, and
+retrieval latency:
+
+```powershell
+uv run python scripts/evaluate_retrieval.py
+```
+
+The script ingests the sample documents into a dedicated `documents_eval` ChromaDB
+collection (the live index and PostgreSQL are never touched), runs every question,
+prints a per-question report, and writes `evals/results/baseline.json` as the
+measurement baseline. Query embeddings cost a fraction of a cent per run.
 
 ## Test
 
@@ -133,19 +173,25 @@ rag-application/
 │   ├── config.py                # Settings loaded from environment / .env
 │   ├── api/
 │   │   ├── health.py            # GET /health
-│   │   └── documents.py         # Document upload/list/chunks/delete endpoints
+│   │   ├── documents.py         # Document upload/list/chunks/delete endpoints
+│   │   ├── retrieve.py          # POST /retrieve semantic search endpoint
+│   │   └── chat.py              # POST /chat grounded answer endpoint
 │   ├── db/
 │   │   ├── base.py               # SQLAlchemy DeclarativeBase
 │   │   ├── session.py            # Engine + session factory + URL normalization
 │   │   ├── models.py             # SQLAlchemy Document model
 │   │   └── repositories.py       # Document record CRUD
 │   ├── schemas/
-│   │   └── documents.py          # Pydantic models for pages, chunks, records
+│   │   ├── documents.py          # Pydantic models for pages, chunks, records
+│   │   ├── retrieval.py          # Pydantic models for retrieval request/results
+│   │   └── chat.py               # Pydantic models for chat request/answer/sources
 │   └── services/
 │       ├── text_extraction.py    # PDF/TXT/Markdown → pages (magic-byte validation)
 │       ├── chunking.py           # Pages → token-bounded overlapping chunks (tiktoken)
 │       ├── embeddings.py         # Batched OpenAI embeddings with bounded retries
 │       ├── vector_store.py       # Persistent ChromaDB collection (upsert/query/delete)
+│       ├── retrieval.py          # retrieve_documents + recall/MRR metric functions
+│       ├── generation.py         # Grounded answer generation + citation resolution
 │       ├── storage.py            # Safe UUID-based file storage under data/uploads
 │       └── errors.py             # Ingestion, storage, and indexing error types
 ├── alembic/
@@ -153,8 +199,12 @@ rag-application/
 │   └── versions/                 # Generated migration files
 ├── alembic.ini                   # Alembic config (no secrets)
 ├── samples/                      # Fictional sample documents for manual testing
+├── evals/
+│   ├── dataset.jsonl             # Labelled retrieval questions (5 categories)
+│   └── results/                  # Evaluation output (baseline.json)
 ├── scripts/
-│   └── verify_index.py           # Semantic retrieval smoke test against the index
+│   ├── verify_index.py           # Semantic retrieval smoke test against the index
+│   └── evaluate_retrieval.py     # Recall@k / MRR / latency evaluation harness
 ├── tests/
 │   ├── conftest.py
 │   ├── test_health.py
@@ -162,6 +212,9 @@ rag-application/
 │   ├── test_chunking.py
 │   ├── test_embeddings.py
 │   ├── test_vector_store.py
+│   ├── test_retrieval.py
+│   ├── test_generation.py
+│   ├── test_chat.py
 │   └── test_documents_api.py
 ├── .env.example
 ├── pyproject.toml
@@ -173,8 +226,8 @@ rag-application/
 - [x] Phase 0 — Repository and environment setup
 - [x] Phase 1 — Document ingestion and chunking
 - [x] Phase 2 — Embeddings and vector indexing
-- [ ] Phase 3 — Retrieval
-- [ ] Phase 4 — Grounded answer generation and citations
+- [x] Phase 3 — Retrieval
+- [x] Phase 4 — Grounded answer generation and citations
 - [ ] Phase 5 — API, persistence, and reliability
 - [ ] Phase 6 — Evaluation and monitoring
 - [ ] Phase 7 — Testing, Docker, and deployment

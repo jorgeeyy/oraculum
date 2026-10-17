@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     chroma_dir: str = "data/chroma"
     vector_collection: str = "documents"
 
+    # Retrieval (Phase 3)
+    retrieval_top_k: int = 5
+
+    # Answer generation (Phase 4)
+    chat_model: str = "gpt-4o-mini"
+    chat_max_tokens: int = 500
+    chat_temperature: float = 0.0
+    chat_timeout_seconds: float = 30.0
+    chat_max_retries: int = 3
+
     @property
     def uploads_path(self) -> Path:
         """Absolute uploads directory; relative values resolve to the project root."""

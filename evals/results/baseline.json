@@ -1,0 +1,334 @@
+{
+  "generated_at": "2026-10-16T17:17:24.713687+00:00",
+  "corpus": [
+    "samples/employee_handbook.md",
+    "samples/it_support_guide.md",
+    "samples/security_policy.md"
+  ],
+  "top_k": 5,
+  "num_questions": 12,
+  "answerable": {
+    "count": 9,
+    "recall@3": 1.0,
+    "recall@5": 1.0,
+    "mrr": 1.0
+  },
+  "no_answer": {
+    "count": 3,
+    "top1_scores": [
+      0.323,
+      0.38,
+      0.389
+    ],
+    "max_top1_score": 0.389
+  },
+  "latency_ms": {
+    "mean": 320.283,
+    "max": 362.4
+  },
+  "per_question": [
+    {
+      "question": "How many days of paid annual leave do full-time employees get?",
+      "type": "factual",
+      "latency_ms": 350.5,
+      "top1_score": 0.589,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.589
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.279
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.146
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "How do I reset a forgotten password?",
+      "type": "factual",
+      "latency_ms": 300.8,
+      "top1_score": 0.408,
+      "retrieved": [
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.408
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.251
+        },
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.108
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "How long must a company password be and when does it expire?",
+      "type": "factual",
+      "latency_ms": 310.2,
+      "top1_score": 0.525,
+      "retrieved": [
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.525
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.37
+        },
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.288
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "How often must employees complete security awareness training?",
+      "type": "factual",
+      "latency_ms": 362.4,
+      "top1_score": 0.47,
+      "retrieved": [
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.47
+        },
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.287
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.268
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "What is the daily meal reimbursement limit for business travel?",
+      "type": "factual",
+      "latency_ms": 344.6,
+      "top1_score": 0.276,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.276
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.192
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.148
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "What is the annual leave carry-over limit and when must security training be completed?",
+      "type": "multi_doc",
+      "latency_ms": 298.5,
+      "top1_score": 0.42,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.42
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.362
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.191
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "What is the sick leave self-certification period and the incident reporting timeframe?",
+      "type": "multi_doc",
+      "latency_ms": 307.6,
+      "top1_score": 0.426,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.426
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.282
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.196
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "What should I do if the VPN disconnects after a few minutes?",
+      "type": "distractor",
+      "latency_ms": 312.1,
+      "top1_score": 0.312,
+      "retrieved": [
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.312
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.235
+        },
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.108
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "How do I regain access when locked out of the authenticator app?",
+      "type": "distractor",
+      "latency_ms": 319.2,
+      "top1_score": 0.33,
+      "retrieved": [
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.33
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.255
+        },
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.111
+        }
+      ],
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "question": "How many days of parental leave are new fathers entitled to?",
+      "type": "no_answer",
+      "latency_ms": 320.1,
+      "top1_score": 0.323,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.323
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.134
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.027
+        }
+      ]
+    },
+    {
+      "question": "What is the company policy on bringing pets to the office?",
+      "type": "no_answer",
+      "latency_ms": 320.6,
+      "top1_score": 0.38,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.38
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.367
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.264
+        }
+      ]
+    },
+    {
+      "question": "What bonus scheme applies to engineering staff?",
+      "type": "no_answer",
+      "latency_ms": 296.8,
+      "top1_score": 0.389,
+      "retrieved": [
+        {
+          "filename": "employee_handbook.md",
+          "page": 1,
+          "score": 0.389
+        },
+        {
+          "filename": "security_policy.md",
+          "page": 1,
+          "score": 0.294
+        },
+        {
+          "filename": "it_support_guide.md",
+          "page": 1,
+          "score": 0.211
+        }
+      ]
+    }
+  ]
+}

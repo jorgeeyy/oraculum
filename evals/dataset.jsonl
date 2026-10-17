@@ -1,0 +1,12 @@
+{"question": "How many days of paid annual leave do full-time employees get?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}]}
+{"question": "How do I reset a forgotten password?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}]}
+{"question": "How long must a company password be and when does it expire?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}]}
+{"question": "How often must employees complete security awareness training?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}]}
+{"question": "What is the daily meal reimbursement limit for business travel?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}]}
+{"question": "What is the annual leave carry-over limit and when must security training be completed?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}]}
+{"question": "What is the sick leave self-certification period and the incident reporting timeframe?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}]}
+{"question": "What should I do if the VPN disconnects after a few minutes?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}]}
+{"question": "How do I regain access when locked out of the authenticator app?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}]}
+{"question": "How many days of parental leave are new fathers entitled to?", "type": "no_answer", "relevant": []}
+{"question": "What is the company policy on bringing pets to the office?", "type": "no_answer", "relevant": []}
+{"question": "What bonus scheme applies to engineering staff?", "type": "no_answer", "relevant": []}

@@ -32,3 +32,12 @@ class EmbeddingServiceError(Exception):
 
 class VectorStoreError(Exception):
     """A vector store operation failed (indexing, querying, or deletion)."""
+
+
+class GenerationNotConfiguredError(Exception):
+    """OPENAI_API_KEY is missing or the chat model is unavailable."""
+
+
+class GenerationServiceError(Exception):
+    """The chat/completions API failed after exhausting bounded retries,
+    or returned output that could not be parsed even after a repair attempt."""
