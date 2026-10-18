@@ -2,7 +2,7 @@
 
 A production-style Retrieval-Augmented Generation (RAG) knowledge assistant. It ingests documents (PDF, TXT, Markdown), indexes them in a vector database, and answers questions grounded in the retrieved evidence with source citations — or states clearly when the documents do not contain enough information.
 
-This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 4: grounded answer generation** — `POST /chat` answers questions from retrieved evidence using a configurable OpenAI chat model, citing only the chunks it actually received; weak or missing evidence produces an explicit insufficient-evidence refusal instead of a guess.
+This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 5: API, persistence, and reliability** — the service now has request tracing, rate limiting, optional API-key auth, idempotent uploads, dependency-aware health checks, and shared connection pooling to the OpenAI API.
 
 ## Stack
 
@@ -49,10 +49,13 @@ Copy-Item .env.example .env
 | `UPLOADS_DIR` | Where uploaded files are stored (default `data/uploads`) |
 | `EMBEDDING_MODEL` | OpenAI embedding model (default `text-embedding-3-small`) |
 | `EMBEDDING_BATCH_SIZE` | Texts per embedding API call (default `100`) |
+| `EMBEDDING_TIMEOUT_SECONDS` | Embedding API timeout (default `30`) |
 | `CHROMA_DIR` | ChromaDB persistence directory (default `data/chroma`) |
 | `CHAT_MODEL` | OpenAI chat model for answers (default `gpt-4o-mini`) |
 | `CHAT_MAX_TOKENS` | Max tokens per generated answer (default `500`) |
 | `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |
+| `RATE_LIMIT_PER_MINUTE` | Per-IP cap on `/chat` + `/retrieve` (default `60`; `0` disables) |
+| `API_KEY` | When set, `/documents`, `/retrieve`, `/chat` require this key (unset = open) |
 
 `.env` is git-ignored. Never commit real keys.
 
@@ -110,7 +113,8 @@ uv run uvicorn app.main:app --reload
 | `DELETE` | `/documents/{id}` | Remove a document's vectors, stored file, and record |
 | `POST` | `/retrieve` | Semantic search: question in, top-k chunks out with scores and citations |
 | `POST` | `/chat` | Grounded Q&A: short answer with resolved source citations, or an explicit insufficient-evidence refusal |
-| `GET` | `/health` | Basic service health check |
+| `GET` | `/health` | Process liveness only |
+| `GET` | `/health/ready` | Dependency readiness: Postgres + vector store must respond (503 if down) |
 
 Try it with the committed sample documents:
 
@@ -143,6 +147,25 @@ uv run python scripts/verify_index.py "How many days of annual leave?"
    is downgraded to `insufficient_evidence` so uncited claims are never presented as
    grounded facts.
 
+### Reliability and security (Phase 5)
+
+- **Shared OpenAI client** — one cached client per (key, timeout) reuses HTTP
+  connections across requests; building a client per request pays a fresh TLS
+  handshake every call (seconds of overhead on Windows).
+- **Request tracing** — every request gets an `X-Request-ID` (incoming value is
+  echoed, otherwise generated); log lines during the request carry the same ID.
+- **Idempotent uploads** — SHA-256 of the file bytes is stored per document;
+  re-uploading identical content returns the existing document with HTTP 200
+  instead of creating a duplicate record and vectors.
+- **Rate limiting** — per-IP fixed window on `/chat` and `/retrieve`
+  (default 60/min, HTTP 429 + `Retry-After`); `/documents` and health are exempt.
+- **Optional API-key auth** — set `API_KEY` and every non-health endpoint
+  requires `Authorization: Bearer <key>` or `X-API-Key: <key>` (401 otherwise).
+  Unset = local development behaves exactly as before.
+- **Dependency-aware readiness** — `/health` is process liveness only;
+  `/health/ready` checks Postgres and the vector store and returns 503 when
+  a critical dependency is down.
+
 ## Retrieval evaluation
 
 A labelled dataset (`evals/dataset.jsonl`, 12 questions across factual, multi-document,
@@ -171,8 +194,10 @@ rag-application/
 ├── app/
 │   ├── main.py                  # FastAPI application factory
 │   ├── config.py                # Settings loaded from environment / .env
+│   ├── observability.py         # X-Request-ID middleware + request-scoped log ID
 │   ├── api/
-│   │   ├── health.py            # GET /health
+│   │   ├── health.py            # GET /health + GET /health/ready
+│   │   ├── auth.py              # Optional API-key dependency
 │   │   ├── documents.py         # Document upload/list/chunks/delete endpoints
 │   │   ├── retrieve.py          # POST /retrieve semantic search endpoint
 │   │   └── chat.py              # POST /chat grounded answer endpoint
@@ -189,9 +214,11 @@ rag-application/
 │       ├── text_extraction.py    # PDF/TXT/Markdown → pages (magic-byte validation)
 │       ├── chunking.py           # Pages → token-bounded overlapping chunks (tiktoken)
 │       ├── embeddings.py         # Batched OpenAI embeddings with bounded retries
+│       ├── openai_client.py      # Shared cached OpenAI HTTP client
 │       ├── vector_store.py       # Persistent ChromaDB collection (upsert/query/delete)
 │       ├── retrieval.py          # retrieve_documents + recall/MRR metric functions
 │       ├── generation.py         # Grounded answer generation + citation resolution
+│       ├── rate_limit.py         # In-memory per-IP rate limiting
 │       ├── storage.py            # Safe UUID-based file storage under data/uploads
 │       └── errors.py             # Ingestion, storage, and indexing error types
 ├── alembic/
@@ -215,6 +242,7 @@ rag-application/
 │   ├── test_retrieval.py
 │   ├── test_generation.py
 │   ├── test_chat.py
+│   ├── test_reliability.py
 │   └── test_documents_api.py
 ├── .env.example
 ├── pyproject.toml
@@ -228,7 +256,7 @@ rag-application/
 - [x] Phase 2 — Embeddings and vector indexing
 - [x] Phase 3 — Retrieval
 - [x] Phase 4 — Grounded answer generation and citations
-- [ ] Phase 5 — API, persistence, and reliability
+- [x] Phase 5 — API, persistence, and reliability
 - [ ] Phase 6 — Evaluation and monitoring
 - [ ] Phase 7 — Testing, Docker, and deployment
 

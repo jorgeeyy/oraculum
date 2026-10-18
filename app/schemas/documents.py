@@ -28,6 +28,7 @@ class DocumentRecord(BaseModel):
     embedding_model: str | None = None
     chunk_size_tokens: int | None = None
     chunk_overlap_tokens: int | None = None
+    content_hash: str | None = None
     created_at: datetime
 
 

@@ -12,6 +12,7 @@ from app.main import create_app
 from app.schemas.documents import Chunk
 from app.services.errors import DatabaseNotConfiguredError
 from app.services.generation import INSUFFICIENT_ANSWER, GenerationResult
+from app.services.rate_limit import FixedWindowRateLimiter, get_rate_limiter
 from app.services.storage import DocumentStorage
 
 
@@ -40,6 +41,7 @@ class RecordingVectorStore:
         self.fail_upsert: Exception | None = None
         self.fail_delete: Exception | None = None
         self.fail_query: Exception | None = None
+        self.vector_count: int = 0
 
     def upsert_chunks(self, chunks, embeddings) -> None:
         if self.fail_upsert is not None:
@@ -58,6 +60,9 @@ class RecordingVectorStore:
             {"vector": list(vector), "top_k": top_k, "document_id": document_id}
         )
         return self.query_result
+
+    def count(self) -> int:
+        return self.vector_count
 
 
 class RecordingGenerator:
@@ -81,6 +86,13 @@ class RecordingGenerator:
             raise self.fail
         self.calls.append({"question": question, "evidence": list(evidence)})
         return self.result
+
+
+class _PermissiveRateLimiter:
+    """Lets the whole suite through; dedicated tests build real limiters."""
+
+    def allow(self, key: str, limit: int) -> bool:
+        return True
 
 
 @pytest.fixture()
@@ -111,6 +123,7 @@ def client(
     app.dependency_overrides[get_embedder] = lambda: fake_embedder
     app.dependency_overrides[get_vector_store] = lambda: fake_vector_store
     app.dependency_overrides[get_generator] = lambda: fake_generator
+    app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
     with TestClient(app) as test_client:
         test_client.storage = storage  # type: ignore[attr-defined]
         yield test_client

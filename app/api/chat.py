@@ -14,6 +14,8 @@ from app.services.errors import (
     VectorStoreError,
 )
 from app.services.generation import INSUFFICIENT_ANSWER, Generator
+from app.services.openai_client import get_openai_client
+from app.services.rate_limit import enforce_rate_limit
 from app.services.retrieval import EmptyQuestionError, retrieve_documents
 from app.services.vector_store import VectorStore, get_vector_store
 
@@ -32,12 +34,17 @@ def get_generator(settings: Settings = Depends(get_settings)) -> Generator:
             temperature=settings.chat_temperature,
             timeout=settings.chat_timeout_seconds,
             max_retries=settings.chat_max_retries,
+            client=(
+                get_openai_client(settings.openai_api_key, settings.chat_timeout_seconds)
+                if settings.openai_api_key
+                else None
+            ),
         )
     except GenerationNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.post("", response_model=ChatResponse)
+@router.post("", response_model=ChatResponse, dependencies=[Depends(enforce_rate_limit)])
 def chat(
     request: ChatRequest,
     embedder: Embedder = Depends(get_embedder),

@@ -20,6 +20,9 @@ class Document(Base):
     embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_size_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_overlap_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

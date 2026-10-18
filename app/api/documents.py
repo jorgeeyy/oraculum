@@ -1,8 +1,9 @@
+import hashlib
 import logging
 import uuid
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -27,6 +28,7 @@ from app.services.errors import (
     UnsupportedFileTypeError,
     VectorStoreError,
 )
+from app.services.openai_client import get_openai_client
 from app.services.storage import DocumentStorage
 from app.services.text_extraction import extract_pages, validate_upload
 from app.services.vector_store import VectorStore, get_vector_store
@@ -50,6 +52,11 @@ def get_embedder(settings: Settings = Depends(get_settings)) -> Embedder:
             model=settings.embedding_model,
             batch_size=settings.embedding_batch_size,
             max_retries=settings.embedding_max_retries,
+            client=(
+                get_openai_client(settings.openai_api_key, settings.embedding_timeout_seconds)
+                if settings.openai_api_key
+                else None
+            ),
         )
     except EmbeddingNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -104,6 +111,7 @@ async def _read_bounded(file: UploadFile, max_size: int) -> bytes:
 
 @router.post("", response_model=UploadDocumentResponse, status_code=201)
 async def upload_document(
+    response: Response,
     file: UploadFile = File(...),
     storage: DocumentStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
@@ -126,6 +134,20 @@ async def upload_document(
     except UnsupportedFileTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Idempotent ingestion: identical bytes already indexed -> return the
+    # existing document instead of creating a duplicate record and vectors.
+    content_hash = hashlib.sha256(data).hexdigest()
+    existing = repositories.find_by_content_hash(session, content_hash)
+    if existing is not None:
+        logger.info(
+            "Duplicate upload of %r (hash=%s...) -> existing document %s",
+            filename,
+            content_hash[:12],
+            existing.id,
+        )
+        response.status_code = 200
+        return UploadDocumentResponse(**existing.model_dump(), chunks=[])
+
     document_id = storage.save(data, extension)
     try:
         repositories.create_document(
@@ -134,6 +156,7 @@ async def upload_document(
             original_filename=filename,
             file_type=extension.lstrip("."),
             size_bytes=len(data),
+            content_hash=content_hash,
         )
     except SQLAlchemyError:
         storage.delete(document_id, extension)

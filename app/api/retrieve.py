@@ -10,6 +10,7 @@ from app.services.errors import (
     EmbeddingServiceError,
     VectorStoreError,
 )
+from app.services.rate_limit import enforce_rate_limit
 from app.services.retrieval import EmptyQuestionError, retrieve_documents
 from app.services.vector_store import VectorStore, get_vector_store
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/retrieve", tags=["retrieval"])
 
 
-@router.post("", response_model=RetrievalResponse)
+@router.post("", response_model=RetrievalResponse, dependencies=[Depends(enforce_rate_limit)])
 def retrieve(
     request: RetrievalRequest,
     embedder: Embedder = Depends(get_embedder),

@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_batch_size: int = 100
     embedding_max_retries: int = 3
+    embedding_timeout_seconds: float = 30.0
     chroma_dir: str = "data/chroma"
     vector_collection: str = "documents"
 
@@ -50,6 +51,10 @@ class Settings(BaseSettings):
     chat_temperature: float = 0.0
     chat_timeout_seconds: float = 30.0
     chat_max_retries: int = 3
+
+    # Reliability and security (Phase 5)
+    rate_limit_per_minute: int = 60  # 0 disables rate limiting
+    api_key: str | None = None  # when set, all non-health endpoints require it
 
     @property
     def uploads_path(self) -> Path:

@@ -99,6 +99,15 @@ class VectorStore:
                 f"{type(exc).__name__}."
             ) from exc
 
+    def count(self) -> int:
+        """Total vectors in the collection; used by readiness checks."""
+        try:
+            return int(self._collection.count())
+        except Exception as exc:
+            raise VectorStoreError(
+                f"Could not count vectors: {type(exc).__name__}."
+            ) from exc
+
     def query(
         self,
         vector: Sequence[float],
