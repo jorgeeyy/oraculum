@@ -94,12 +94,22 @@ uv run alembic history
 ## Run
 
 ```powershell
+# backend
 uv run uvicorn app.main:app --reload
+
+# frontend (separate terminal, dev server with API proxy on :5173)
+cd frontend
+npm run dev
 ```
 
 - API: http://127.0.0.1:8000
 - Interactive docs: http://127.0.0.1:8000/docs
 - Health check: http://127.0.0.1:8000/health
+- UI (dev): http://localhost:5173 — Vite proxies `/chat`, `/documents`,
+  `/retrieve`, and `/health` to the backend
+- UI (production): `cd frontend && npm run build`, then restart the backend —
+  FastAPI serves `frontend/dist` at `/`, so the UI and API are same-origin and
+  no CORS configuration is needed
 
 ## API endpoints
 
@@ -164,6 +174,34 @@ uv run python scripts/verify_index.py "How many days of annual leave?"
 - **Dependency-aware readiness** — `/health` is process liveness only;
   `/health/ready` checks Postgres and the vector store and returns 503 when
   a critical dependency is down.
+
+## Frontend
+
+A React + Vite + TypeScript single-page UI (tab-based, no router) with four
+views:
+
+- **Chat** — ask questions, get grounded answers with expandable source
+  excerpts, status chip (grounded vs insufficient evidence), timing, optional
+  per-document scope and `top_k`; 401 opens an API-key modal, 429 shows a
+  retry countdown
+- **Documents** — drag-and-drop upload (duplicate uploads are detected and
+  reported), list with status/chunks/size, view chunked text, delete
+- **Retrieve** — raw retrieval view with similarity score bars, no LLM;
+  results can be forwarded to Chat
+- **Health badge** — polls `/health/ready` every 30 s with dependency details
+  on hover
+
+```powershell
+cd frontend
+npm install          # once
+npm run dev          # dev server + proxy → :5173
+npm run typecheck    # tsc --noEmit
+npm test             # vitest (API client error-mapping tests)
+npm run build        # typecheck + production build to frontend/dist
+```
+
+The API key (only needed when the server has `API_KEY` set) is stored in
+`localStorage` and sent as `X-API-Key`.
 
 ## Retrieval evaluation
 
@@ -243,6 +281,18 @@ rag-application/
 │   ├── test_chat.py
 │   ├── test_reliability.py
 │   └── test_documents_api.py
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.ts            # Vite config + dev proxy + vitest config
+│   ├── tsconfig.json
+│   ├── index.html
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx               # Tab shell + API-key modal
+│       ├── styles.css
+│       ├── api/                  # Typed fetch client + TS types + tests
+│       ├── components/           # HealthBadge, SourceCard, dropzone, modal
+│       └── tabs/                 # Chat, Documents, Retrieve screens
 ├── .env.example
 ├── pyproject.toml
 └── README.md

@@ -24,3 +24,6 @@ data/
 # Local-only documents
 production_rag*
 ROADMAP.md
+
+# Frontend
+frontend/node_modules/

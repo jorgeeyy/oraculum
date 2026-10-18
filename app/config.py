@@ -57,8 +57,14 @@ class Settings(BaseSettings):
     chat_max_retries: int = 3
 
     # Reliability and security (Phase 5)
-    rate_limit_per_minute: int = 10  # 0 disables rate limiting
+    rate_limit_per_minute: int = 60  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it
+
+    # Frontend (dev server origins; production build is same-origin)
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
     @property
     def uploads_path(self) -> Path:

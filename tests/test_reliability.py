@@ -302,6 +302,44 @@ class TestHealthReady:
         assert response.json()["dependencies"]["vector_store"] == "down"
 
 
+class TestCORS:
+    def test_dev_origin_is_allowed(self, client: TestClient) -> None:
+        response = client.post(
+            "/retrieve",
+            json={"question": "q"},
+            headers={"Origin": "http://localhost:5173"},
+        )
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == (
+            "http://localhost:5173"
+        )
+        # The request-id header is exposed so the client can trace responses.
+        assert "x-request-id" in response.headers.get(
+            "access-control-expose-headers", ""
+        ).lower()
+
+    def test_unknown_origin_is_not_allowed(self, client: TestClient) -> None:
+        response = client.post(
+            "/retrieve",
+            json={"question": "q"},
+            headers={"Origin": "http://evil.example.com"},
+        )
+        assert not response.headers.get("access-control-allow-origin")
+
+    def test_preflight_allows_api_key_header(self, client: TestClient) -> None:
+        response = client.options(
+            "/chat",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,x-api-key",
+            },
+        )
+        assert response.status_code == 200
+        allowed = response.headers.get("access-control-allow-headers", "").lower()
+        assert "x-api-key" in allowed
+
+
 class TestOpenAIClientCache:
     def setup_method(self) -> None:
         clear_openai_client_cache()
