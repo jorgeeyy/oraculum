@@ -49,6 +49,7 @@ Copy-Item .env.example .env
 | `EMBEDDING_BATCH_SIZE` | Texts per embedding API call (default `100`) |
 | `EMBEDDING_TIMEOUT_SECONDS` | Embedding API timeout (default `30`) |
 | `CHROMA_DIR` | ChromaDB persistence directory (default `data/chroma`) |
+| `RETRIEVAL_TOP_K` | Server default for `/retrieve` + `/chat` (default `5`; per-request `top_k` overrides) |
 | `CHAT_MODEL` | OpenAI chat model for answers (default `gpt-4o-mini`) |
 | `CHAT_MAX_TOKENS` | Max tokens per generated answer (default `500`) |
 | `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |

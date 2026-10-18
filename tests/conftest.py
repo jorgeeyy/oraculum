@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, delete, text
 
 from app.api.chat import get_generator
 from app.api.documents import get_embedder, get_storage, get_vector_store
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.session import normalize_database_url
 from app.main import create_app
 from app.schemas.documents import Chunk
@@ -127,6 +127,30 @@ def client(
     with TestClient(app) as test_client:
         test_client.storage = storage  # type: ignore[attr-defined]
         yield test_client
+
+
+@pytest.fixture()
+def client_with_settings(
+    tmp_path,
+    fake_embedder: RecordingEmbedder,
+    fake_vector_store: RecordingVectorStore,
+    fake_generator: RecordingGenerator,
+):
+    """Factory: TestClient app with fake deps AND overridden Settings values."""
+
+    def factory(**settings_overrides) -> TestClient:
+        app = create_app()
+        storage = DocumentStorage(tmp_path / "uploads")
+        app.dependency_overrides[get_storage] = lambda: storage
+        app.dependency_overrides[get_embedder] = lambda: fake_embedder
+        app.dependency_overrides[get_vector_store] = lambda: fake_vector_store
+        app.dependency_overrides[get_generator] = lambda: fake_generator
+        app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
+        merged = get_settings().model_dump() | settings_overrides
+        app.dependency_overrides[get_settings] = lambda: Settings(**merged)
+        return TestClient(app)
+
+    return factory
 
 
 @pytest.fixture()

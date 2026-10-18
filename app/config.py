@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Anchor all relative paths to the repository root, not the process working
@@ -43,7 +44,10 @@ class Settings(BaseSettings):
     vector_collection: str = "documents"
 
     # Retrieval (Phase 3)
-    retrieval_top_k: int = 5
+    # Server-wide default for /retrieve and /chat; a request may override
+    # per call via its optional top_k field. Bounded so a bad deploy value
+    # fails at startup instead of at request time.
+    retrieval_top_k: int = Field(default=5, ge=1, le=20)
 
     # Answer generation (Phase 4)
     chat_model: str = "gpt-4o-mini"
@@ -53,7 +57,7 @@ class Settings(BaseSettings):
     chat_max_retries: int = 3
 
     # Reliability and security (Phase 5)
-    rate_limit_per_minute: int = 60  # 0 disables rate limiting
+    rate_limit_per_minute: int = 10  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it
 
     @property

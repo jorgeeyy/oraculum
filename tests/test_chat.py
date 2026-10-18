@@ -100,6 +100,26 @@ class TestChatEndpoint:
         assert fake_vector_store.queries[0]["top_k"] == 3
         assert fake_vector_store.queries[0]["document_id"] == DOC_ID
 
+    def test_omitted_top_k_uses_config_default(
+        self, client: TestClient, fake_vector_store
+    ) -> None:
+        client.post("/chat", json={"question": "vpn"})
+        assert fake_vector_store.queries[0]["top_k"] == 5
+
+    def test_config_value_changes_chat_default(
+        self, client_with_settings, fake_vector_store
+    ) -> None:
+        with client_with_settings(retrieval_top_k=8) as test_client:
+            test_client.post("/chat", json={"question": "vpn"})
+        assert fake_vector_store.queries[0]["top_k"] == 8
+
+    def test_request_top_k_beats_config_in_chat(
+        self, client_with_settings, fake_vector_store
+    ) -> None:
+        with client_with_settings(retrieval_top_k=8) as test_client:
+            test_client.post("/chat", json={"question": "vpn", "top_k": 2})
+        assert fake_vector_store.queries[0]["top_k"] == 2
+
     def test_generator_failure_returns_503(
         self, client: TestClient, fake_vector_store, fake_generator
     ) -> None:

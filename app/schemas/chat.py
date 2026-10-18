@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    top_k: int = Field(default=5, ge=1, le=20)
+    # None = use the server default (RETRIEVAL_TOP_K); a value must be 1-20.
+    top_k: int | None = Field(default=None, ge=1, le=20)
     document_id: str | None = None
 
     @field_validator("question")

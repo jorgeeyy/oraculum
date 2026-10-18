@@ -2,7 +2,9 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from app.config import Settings
 from app.services.errors import EmbeddingServiceError, VectorStoreError
 from app.services.retrieval import (
     EmptyQuestionError,
@@ -201,3 +203,40 @@ class TestRetrieveEndpoint:
         )
         assert response.status_code == 200
         assert response.json()["results"] == []
+
+
+class TestTopKResolution:
+    def test_omitted_top_k_uses_config_default(
+        self, client: TestClient, fake_vector_store
+    ) -> None:
+        response = client.post("/retrieve", json={"question": "vpn"})
+        assert response.status_code == 200
+        assert fake_vector_store.queries[0]["top_k"] == 5
+        assert response.json()["top_k"] == 5
+
+    def test_config_value_changes_server_default(
+        self, client_with_settings, fake_vector_store
+    ) -> None:
+        with client_with_settings(retrieval_top_k=10) as test_client:
+            response = test_client.post("/retrieve", json={"question": "vpn"})
+        assert response.status_code == 200
+        assert fake_vector_store.queries[0]["top_k"] == 10
+        # Response reports the effective value actually used.
+        assert response.json()["top_k"] == 10
+
+    def test_request_value_beats_config(
+        self, client_with_settings, fake_vector_store
+    ) -> None:
+        with client_with_settings(retrieval_top_k=10) as test_client:
+            response = test_client.post(
+                "/retrieve", json={"question": "vpn", "top_k": 3}
+            )
+        assert response.status_code == 200
+        assert fake_vector_store.queries[0]["top_k"] == 3
+        assert response.json()["top_k"] == 3
+
+    def test_settings_reject_out_of_range_default(self) -> None:
+        with pytest.raises(ValidationError):
+            Settings(retrieval_top_k=999)
+        with pytest.raises(ValidationError):
+            Settings(retrieval_top_k=0)

@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.documents import get_embedder
+from app.api.retrieve import resolve_top_k
 from app.config import Settings, get_settings
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.embeddings import Embedder
@@ -50,6 +51,7 @@ def chat(
     embedder: Embedder = Depends(get_embedder),
     store: VectorStore = Depends(get_vector_store),
     generator: Generator = Depends(get_generator),
+    settings: Settings = Depends(get_settings),
 ) -> ChatResponse:
     """Answer a question from retrieved evidence with resolved citations.
 
@@ -59,12 +61,13 @@ def chat(
     citations are dropped and uncited answers are downgraded to
     insufficient_evidence.
     """
+    top_k = resolve_top_k(request.top_k, settings)
     try:
         retrieval = retrieve_documents(
             request.question,
             embedder=embedder,
             store=store,
-            top_k=request.top_k,
+            top_k=top_k,
             document_id=request.document_id,
         )
     except EmptyQuestionError as exc:
