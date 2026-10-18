@@ -177,8 +177,8 @@ uv run python scripts/verify_index.py "How many days of annual leave?"
 
 ## Frontend
 
-A React + Vite + TypeScript single-page UI (tab-based, no router) with four
-views:
+A React + Vite + TypeScript single-page UI (Tailwind CSS v4, sidebar
+navigation, no router) with four views:
 
 - **Chat** — ask questions, get grounded answers with expandable source
   excerpts, status chip (grounded vs insufficient evidence), timing, optional
@@ -201,7 +201,8 @@ npm run build        # typecheck + production build to frontend/dist
 ```
 
 The API key (only needed when the server has `API_KEY` set) is stored in
-`localStorage` and sent as `X-API-Key`.
+`localStorage` and sent as `X-API-Key`. The theme (dark by default, light
+toggle in the sidebar) is also persisted in `localStorage`.
 
 ## Retrieval evaluation
 
@@ -289,7 +290,7 @@ rag-application/
 │   └── src/
 │       ├── main.tsx
 │       ├── App.tsx               # Tab shell + API-key modal
-│       ├── styles.css
+│       ├── index.css               # Tailwind v4 entry: @theme tokens, dark palette
 │       ├── api/                  # Typed fetch client + TS types + tests
 │       ├── components/           # HealthBadge, SourceCard, dropzone, modal
 │       └── tabs/                 # Chat, Documents, Retrieve screens

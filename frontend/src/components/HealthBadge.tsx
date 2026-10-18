@@ -35,13 +35,13 @@ export default function HealthBadge() {
   }, []);
 
   const down = offline || ready?.status === "unavailable";
-  const dotClass = ready === null && !offline ? "unknown" : down ? "down" : "ok";
+  const dotClass = ready === null && !offline ? "bg-faint" : down ? "bg-red-500" : "bg-emerald-500";
   const label = offline
     ? "Server unreachable"
     : ready === null
       ? "Checking…"
       : ready.status === "ok"
-        ? "Ready"
+        ? "System ready"
         : "Degraded";
 
   const title = offline
@@ -53,9 +53,12 @@ export default function HealthBadge() {
       : "";
 
   return (
-    <span className="health-badge" title={title}>
-      <span className={`dot ${dotClass}`} />
-      {label}
-    </span>
+    <div
+      className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted"
+      title={title}
+    >
+      <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+      <span className="truncate">{label}</span>
+    </div>
   );
 }

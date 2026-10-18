@@ -1,9 +1,19 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RAG Knowledge Assistant</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("rag.theme");
+          document.documentElement.classList.toggle("dark", theme !== "light");
+        } catch (e) {
+          /* keep default dark */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

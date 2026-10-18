@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-ink: var(--ink);
+  --color-muted: var(--ink-muted);
+  --color-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-on-accent: var(--on-accent);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
+}
+
+:root {
+  --canvas: #fafafa;
+  --panel: #f3f4f6;
+  --surface: #ffffff;
+  --elevated: #ffffff;
+  --ink: #0f0f0f;
+  --ink-muted: #5b616e;
+  --ink-faint: #8a8f98;
+  --line: #e5e7eb;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --on-accent: #ffffff;
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #212121;
+  --panel: #171717;
+  --surface: #2f2f2f;
+  --elevated: #343434;
+  --ink: #ececec;
+  --ink-muted: #b4b4b4;
+  --ink-faint: #8e8e8e;
+  --line: #3f3f3f;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --on-accent: #ffffff;
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    height: 100%;
+  }
+
+  body {
+    height: 100%;
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    height: 100%;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+}

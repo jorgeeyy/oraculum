@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Loader2, Upload } from "lucide-react";
 
 interface Props {
   onFile: (file: File) => void;
@@ -11,7 +12,11 @@ export default function UploadDropzone({ onFile, busy }: Props) {
 
   return (
     <div
-      className={`dropzone ${dragOver ? "dragover" : ""}`}
+      className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border-2 border-dashed px-6 py-8 text-center transition-colors ${
+        dragOver
+          ? "border-accent bg-accent/8"
+          : "border-line bg-surface hover:border-accent/50"
+      } ${busy ? "pointer-events-none opacity-70" : ""}`}
       onClick={() => inputRef.current?.click()}
       onDragOver={(e) => {
         e.preventDefault();
@@ -26,18 +31,28 @@ export default function UploadDropzone({ onFile, busy }: Props) {
       }}
     >
       {busy ? (
-        "Uploading and indexing…"
+        <span className="flex items-center gap-2 text-sm text-muted">
+          <Loader2 size={16} className="animate-spin text-accent" />
+          Uploading and indexing…
+        </span>
       ) : (
         <>
-          <strong>Drop a file here</strong> or click to browse
-          <div className="muted">.pdf · .txt · .md — up to 10&nbsp;MB</div>
+          <span className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <Upload size={18} strokeWidth={2} />
+          </span>
+          <span className="text-sm font-medium">
+            Drop a file here <span className="text-muted">or click to browse</span>
+          </span>
+          <span className="text-xs text-faint">
+            .pdf · .txt · .md — up to 10 MB
+          </span>
         </>
       )}
       <input
         ref={inputRef}
         type="file"
         accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
-        style={{ display: "none" }}
+        className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file && !busy) onFile(file);
