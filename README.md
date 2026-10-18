@@ -2,8 +2,6 @@
 
 A production-style Retrieval-Augmented Generation (RAG) knowledge assistant. It ingests documents (PDF, TXT, Markdown), indexes them in a vector database, and answers questions grounded in the retrieved evidence with source citations — or states clearly when the documents do not contain enough information.
 
-This project is being built incrementally following `production_rag_knowledge_assistant_guide.md`. It is currently at **Phase 5: API, persistence, and reliability** — the service now has request tracing, rate limiting, optional API-key auth, idempotent uploads, dependency-aware health checks, and shared connection pooling to the OpenAI API.
-
 ## Stack
 
 - **Language:** Python 3.13
@@ -248,29 +246,3 @@ rag-application/
 ├── pyproject.toml
 └── README.md
 ```
-
-## Status and roadmap
-
-- [x] Phase 0 — Repository and environment setup
-- [x] Phase 1 — Document ingestion and chunking
-- [x] Phase 2 — Embeddings and vector indexing
-- [x] Phase 3 — Retrieval
-- [x] Phase 4 — Grounded answer generation and citations
-- [x] Phase 5 — API, persistence, and reliability
-- [ ] Phase 6 — Evaluation and monitoring
-- [ ] Phase 7 — Testing, Docker, and deployment
-
-Note: document record persistence (PostgreSQL) and the `/documents` endpoints were
-pulled forward from Phase 5 into Phase 1 as a deliberate deviation from the guide's
-phase order.
-
-Deviation: the guide specifies Pinecone as the vector store; this project uses
-ChromaDB instead (free, local, no external account) while filling the same role —
-vector persistence, metadata filtering for scoped deletion, and citation metadata
-for retrieval. Chat endpoints remain scheduled for later phases.
-
-## Security notes
-
-- Secrets live only in `.env` (git-ignored) or environment variables.
-- `.env.example` contains placeholders only.
-- Document contents and retrieval results are treated as untrusted input in later phases.
