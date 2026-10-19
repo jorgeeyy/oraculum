@@ -5,7 +5,6 @@ import {
   Menu,
   MessageSquare,
   Moon,
-  Search,
   Sun,
   X,
 } from "lucide-react";
@@ -13,21 +12,18 @@ import { getApiKey, setApiKey } from "./api/client";
 import HealthBadge from "./components/HealthBadge";
 import Chat from "./tabs/Chat";
 import Documents from "./tabs/Documents";
-import Retrieve from "./tabs/Retrieve";
 
-type Tab = "chat" | "documents" | "retrieve";
+type Tab = "chat" | "documents";
 
 const NAV_ITEMS: readonly { id: Tab; label: string; icon: typeof MessageSquare }[] =
   [
     { id: "chat", label: "Chat", icon: MessageSquare },
     { id: "documents", label: "Documents", icon: FileText },
-    { id: "retrieve", label: "Retrieve", icon: Search },
   ];
 
 const TITLES: Record<Tab, string> = {
   chat: "Chat",
   documents: "Documents",
-  retrieve: "Retrieve",
 };
 
 function readIsDark(): boolean {
@@ -36,18 +32,11 @@ function readIsDark(): boolean {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
-  const [prefill, setPrefill] = useState("");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState(getApiKey() ?? "");
   const [apiKey, setApiKeyState] = useState(getApiKey());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isDark, setIsDark] = useState(readIsDark);
-
-  const sendToChat = (question: string) => {
-    setPrefill(question);
-    setTab("chat");
-    setSidebarOpen(false);
-  };
 
   const saveKey = () => {
     const trimmed = keyDraft.trim();
@@ -163,17 +152,10 @@ export default function App() {
         </header>
 
         <main className="min-h-0 flex-1 overflow-hidden">
-          {tab === "chat" && (
-            <Chat
-              apiKeyVersion={apiKey ?? ""}
-              prefill={prefill}
-              onAskKey={() => setKeyModalOpen(true)}
-            />
-          )}
+          {tab === "chat" && <Chat onAskKey={() => setKeyModalOpen(true)} />}
           {tab === "documents" && (
             <Documents onAskKey={() => setKeyModalOpen(true)} />
           )}
-          {tab === "retrieve" && <Retrieve onSendToChat={sendToChat} />}
         </main>
       </div>
 

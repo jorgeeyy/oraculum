@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Loader2, Settings2 } from "lucide-react";
+import { ArrowUp, Loader2 } from "lucide-react";
 import { ApiError, api } from "../api/client";
-import type { ChatResponse, DocumentRecord } from "../api/types";
+import type { ChatResponse } from "../api/types";
 import SourceCard from "../components/SourceCard";
 
 interface ChatProps {
-  prefill: string;
-  apiKeyVersion: string;
   onAskKey: () => void;
 }
 
@@ -22,39 +20,14 @@ const SUGGESTIONS = [
   "What is the process for requesting IT equipment?",
 ];
 
-export default function Chat({ prefill, apiKeyVersion, onAskKey }: ChatProps) {
+export default function Chat({ onAskKey }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [scopeDoc, setScopeDoc] = useState("");
-  const [topK, setTopK] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (prefill) {
-      setInput(prefill);
-      inputRef.current?.focus();
-    }
-  }, [prefill]);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listDocuments()
-      .then((docs) => {
-        if (!cancelled) setDocuments(docs.filter((d) => d.status === "completed"));
-      })
-      .catch(() => {
-        /* scope dropdown is optional; ignore load failures */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiKeyVersion]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -77,14 +50,7 @@ export default function Chat({ prefill, apiKeyVersion, onAskKey }: ChatProps) {
     setError(null);
     setNeedsKey(false);
     try {
-      const parsedTopK = Number(topK);
-      const response = await api.chat({
-        question,
-        ...(scopeDoc ? { document_id: scopeDoc } : {}),
-        ...(Number.isInteger(parsedTopK) && parsedTopK >= 1 && parsedTopK <= 20
-          ? { top_k: parsedTopK }
-          : {}),
-      });
+      const response = await api.chat({ question });
       setMessages((prev) => [...prev, { role: "assistant", text: response.answer, response }]);
     } catch (err) {
       const message =
@@ -210,47 +176,6 @@ export default function Chat({ prefill, apiKeyVersion, onAskKey }: ChatProps) {
       {/* Composer */}
       <div className="shrink-0 border-t border-line bg-canvas/95 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl px-4 py-3">
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-            <select
-              value={scopeDoc}
-              onChange={(e) => setScopeDoc(e.target.value)}
-              className="rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-muted outline-none hover:text-ink focus:border-accent"
-              title="Limit answers to one document"
-            >
-              <option value="">All documents</option>
-              {documents.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.original_filename}
-                </option>
-              ))}
-            </select>
-
-            <details className="group relative">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-muted outline-none hover:text-ink [&::-webkit-details-marker]:hidden">
-                <Settings2 size={13} />
-                top_k
-                {topK && <span className="text-accent">{topK}</span>}
-              </summary>
-              <div className="absolute bottom-full left-0 z-10 mb-2 w-64 rounded-xl border border-line bg-elevated p-3 shadow-xl">
-                <label className="block text-xs font-medium text-muted">
-                  Results to retrieve
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={topK}
-                    placeholder="server default (5)"
-                    onChange={(e) => setTopK(e.target.value)}
-                    className="mt-1.5 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-faint focus:border-accent"
-                  />
-                </label>
-                <p className="mt-1.5 text-[11px] text-faint">
-                  1–20; empty uses the server default.
-                </p>
-              </div>
-            </details>
-          </div>
-
           <div className="flex items-end gap-2 rounded-3xl border border-line bg-surface px-4 py-3 shadow-lg transition-colors focus-within:border-accent/60 focus-within:ring-2 focus-within:ring-accent/20">
             <textarea
               ref={inputRef}

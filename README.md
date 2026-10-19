@@ -178,18 +178,18 @@ uv run python scripts/verify_index.py "How many days of annual leave?"
 ## Frontend
 
 A React + Vite + TypeScript single-page UI (Tailwind CSS v4, sidebar
-navigation, no router) with four views:
+navigation, no router) with two views:
 
 - **Chat** — ask questions, get grounded answers with expandable source
-  excerpts, status chip (grounded vs insufficient evidence), timing, optional
-  per-document scope and `top_k`; 401 opens an API-key modal, 429 shows a
-  retry countdown
+  excerpts, status chip (grounded vs insufficient evidence), and timing;
+  401 opens an API-key modal, 429 shows a retry countdown
 - **Documents** — drag-and-drop upload (duplicate uploads are detected and
   reported), list with status/chunks/size, view chunked text, delete
-- **Retrieve** — raw retrieval view with similarity score bars, no LLM;
-  results can be forwarded to Chat
 - **Health badge** — polls `/health/ready` every 30 s with dependency details
   on hover
+
+The `/retrieve` endpoint stays API-only (no UI screen): it remains available
+via `/docs` and curl as a retrieval debugging tool.
 
 ```powershell
 cd frontend
@@ -293,7 +293,7 @@ rag-application/
 │       ├── index.css               # Tailwind v4 entry: @theme tokens, dark palette
 │       ├── api/                  # Typed fetch client + TS types + tests
 │       ├── components/           # HealthBadge, SourceCard, dropzone, modal
-│       └── tabs/                 # Chat, Documents, Retrieve screens
+│       └── tabs/                 # Chat, Documents screens
 ├── .env.example
 ├── pyproject.toml
 └── README.md
