@@ -84,7 +84,7 @@ export default function App() {
               <MessageSquare size={16} strokeWidth={2.25} />
             </span>
             <span className="text-sm font-semibold tracking-tight">
-              Knowledge Assistant
+              Oraculum
             </span>
           </div>
           <button
