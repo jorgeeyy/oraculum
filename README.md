@@ -1,4 +1,4 @@
-# RAG Knowledge Assistant
+# Oraculum
 
 A production-style Retrieval-Augmented Generation (RAG) knowledge assistant. It ingests documents (PDF, TXT, Markdown), indexes them in a vector database, and answers questions grounded in the retrieved evidence with source citations — or states clearly when the documents do not contain enough information.
 
@@ -25,7 +25,7 @@ A production-style Retrieval-Augmented Generation (RAG) knowledge assistant. It 
 
 ```powershell
 git clone <repo-url>
-cd rag-application
+cd oraculum
 uv sync
 ```
 
@@ -228,7 +228,7 @@ uv run pytest
 ## Project structure
 
 ```text
-rag-application/
+oraculum/
 ├── app/
 │   ├── main.py                  # FastAPI application factory
 │   ├── config.py                # Settings loaded from environment / .env
