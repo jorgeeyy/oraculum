@@ -1,7 +1,7 @@
 [project]
-name = "rag-application"
+name = "oraculum"
 version = "0.1.0"
-description = "Production-style RAG knowledge assistant"
+description = "Oraculum — a production-style RAG knowledge assistant"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
