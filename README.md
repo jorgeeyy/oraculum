@@ -121,7 +121,11 @@ npm run dev
 | `GET` | `/documents/{id}/chunks` | Re-chunk a stored document with the current chunking configuration |
 | `DELETE` | `/documents/{id}` | Remove a document's vectors, stored file, and record |
 | `POST` | `/retrieve` | Semantic search: question in, top-k chunks out with scores and citations |
-| `POST` | `/chat` | Grounded Q&A: short answer with resolved source citations, or an explicit insufficient-evidence refusal |
+| `POST` | `/chat` | Grounded Q&A: short answer with resolved source citations, or an explicit insufficient-evidence refusal; pass `conversation_id` to persist the exchange |
+| `GET` | `/conversations` | List saved chats (id, title, message count, activity) |
+| `GET` | `/conversations/{id}` | Full thread: title plus every stored message in order |
+| `PATCH` | `/conversations/{id}` | Rename a chat |
+| `DELETE` | `/conversations/{id}` | Delete a chat and all of its messages |
 | `GET` | `/health` | Process liveness only |
 | `GET` | `/health/ready` | Dependency readiness: Postgres + vector store must respond (503 if down) |
 
@@ -139,6 +143,14 @@ curl -X POST http://127.0.0.1:8000/retrieve -H "Content-Type: application/json" 
 # grounded answer with citations:
 curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" `
   -d "{\"question\": \"How many days of annual leave?\"}"
+
+# persistent thread: conversation_id: null creates a chat and returns its id;
+# sending that id back appends to it. Omitting the key entirely stays stateless.
+curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" `
+  -d "{\"question\": \"How many days of annual leave?\", \"conversation_id\": null}"
+curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" `
+  -d "{\"question\": \"What about carry-over?\", \"conversation_id\": \"<id from previous reply>\"}"
+curl http://127.0.0.1:8000/conversations
 
 # or the standalone smoke script:
 uv run python scripts/verify_index.py "How many days of annual leave?"
@@ -174,6 +186,13 @@ uv run python scripts/verify_index.py "How many days of annual leave?"
 - **Dependency-aware readiness** — `/health` is process liveness only;
   `/health/ready` checks Postgres and the vector store and returns 503 when
   a critical dependency is down.
+- **Chat history** — exchanges are saved server-side in Postgres when the
+  `/chat` request includes a `conversation_id` (`null` creates a new chat,
+  a UUID appends, omission keeps the endpoint stateless for scripts).
+  Each chat is scoped to a SHA-256 fingerprint of the API key (or a single
+  local scope when no key is configured), so changing `API_KEY` hides the
+  previous key's history. Nothing is auto-purged; chats are deletable
+  individually via `DELETE /conversations/{id}`.
 
 ## Frontend
 
@@ -182,7 +201,10 @@ navigation, no router) with two views:
 
 - **Chat** — ask questions, get grounded answers with expandable source
   excerpts, status chip (grounded vs insufficient evidence), and timing;
-  401 opens an API-key modal, 429 shows a retry countdown
+  401 opens an API-key modal, 429 shows a retry countdown. The sidebar
+  lists saved chats with a **New chat** button, resume on click, and
+  inline delete; threads reload from `GET /conversations/{id}` and the
+  first message of a new thread creates the conversation server-side
 - **Documents** — drag-and-drop upload (duplicate uploads are detected and
   reported), list with status/chunks/size, view chunked text, delete
 - **Health badge** — polls `/health/ready` every 30 s with dependency details
@@ -238,16 +260,19 @@ oraculum/
 │   │   ├── auth.py              # Optional API-key dependency
 │   │   ├── documents.py         # Document upload/list/chunks/delete endpoints
 │   │   ├── retrieve.py          # POST /retrieve semantic search endpoint
-│   │   └── chat.py              # POST /chat grounded answer endpoint
+│   │   ├── chat.py              # POST /chat grounded answer endpoint (optional persistence)
+│   │   ├── conversations.py      # Chat history list/get/rename/delete endpoints
+│   │   └── deps.py               # Shared DB session dependencies (503 on DB down)
 │   ├── db/
 │   │   ├── base.py               # SQLAlchemy DeclarativeBase
 │   │   ├── session.py            # Engine + session factory + URL normalization
-│   │   ├── models.py             # SQLAlchemy Document model
-│   │   └── repositories.py       # Document record CRUD
+│   │   ├── models.py             # SQLAlchemy Document, Conversation, ChatMessage models
+│   │   └── repositories.py       # Document record CRUD + conversation/message persistence
 │   ├── schemas/
 │   │   ├── documents.py          # Pydantic models for pages, chunks, records
 │   │   ├── retrieval.py          # Pydantic models for retrieval request/results
-│   │   └── chat.py               # Pydantic models for chat request/answer/sources
+│   │   ├── chat.py               # Pydantic models for chat request/answer/sources
+│   │   └── conversations.py       # Pydantic models for saved chats and messages
 │   └── services/
 │       ├── text_extraction.py    # PDF/TXT/Markdown → pages (magic-byte validation)
 │       ├── chunking.py           # Pages → token-bounded overlapping chunks (tiktoken)
@@ -281,7 +306,8 @@ oraculum/
 │   ├── test_generation.py
 │   ├── test_chat.py
 │   ├── test_reliability.py
-│   └── test_documents_api.py
+│   ├── test_documents_api.py
+│   └── test_conversations.py
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts            # Vite config + dev proxy + vitest config
@@ -289,7 +315,7 @@ oraculum/
 │   ├── index.html
 │   └── src/
 │       ├── main.tsx
-│       ├── App.tsx               # Tab shell + API-key modal
+│       ├── App.tsx               # Tab shell + chat-history sidebar + API-key modal
 │       ├── index.css               # Tailwind v4 entry: @theme tokens, dark palette
 │       ├── api/                  # Typed fetch client + TS types + tests
 │       ├── components/           # HealthBadge, SourceCard, dropzone, modal

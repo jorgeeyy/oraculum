@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.auth import require_api_key
 from app.api.chat import router as chat_router
+from app.api.conversations import router as conversations_router
 from app.api.documents import router as documents_router
 from app.api.health import router as health_router
 from app.api.retrieve import router as retrieve_router
@@ -26,7 +27,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         description="Retrieval-augmented generation knowledge assistant.",
-        version="0.6.0",
+        version="0.7.0",
     )
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router, dependencies=[Depends(require_api_key)])
     app.include_router(retrieve_router, dependencies=[Depends(require_api_key)])
     app.include_router(chat_router, dependencies=[Depends(require_api_key)])
+    app.include_router(conversations_router, dependencies=[Depends(require_api_key)])
     # Serve the built frontend when it exists (npm run build); routes added
     # above win, so the mount only catches static asset paths and "/".
     if (_FRONTEND_DIST / "index.html").is_file():

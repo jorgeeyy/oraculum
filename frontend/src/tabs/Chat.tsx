@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Loader2 } from "lucide-react";
 import { ApiError, api } from "../api/client";
-import type { ChatResponse } from "../api/types";
+import type { ChatResponse, MessageRecord } from "../api/types";
 import SourceCard from "../components/SourceCard";
 
 interface ChatProps {
   onAskKey: () => void;
+  conversationId: string | null;
+  onConversationCreated: (conversationId: string) => void;
 }
 
 interface Message {
@@ -20,14 +22,73 @@ const SUGGESTIONS = [
   "What is the process for requesting IT equipment?",
 ];
 
-export default function Chat({ onAskKey }: ChatProps) {
+function toMessage(record: MessageRecord, conversationId: string | null): Message {
+  if (record.role === "user") return { role: "user", text: record.content };
+  return {
+    role: "assistant",
+    text: record.content,
+    response: {
+      question: "",
+      answer: record.content,
+      status:
+        record.status === "insufficient_evidence"
+          ? "insufficient_evidence"
+          : "answered",
+      sources: record.sources,
+      model: record.model ?? "",
+      retrieval_ms: record.retrieval_ms ?? 0,
+      generation_ms: record.generation_ms ?? 0,
+      conversation_id: conversationId,
+    },
+  };
+}
+
+export default function Chat({
+  onAskKey,
+  conversationId,
+  onConversationCreated,
+}: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loadingThread, setLoadingThread] = useState(conversationId !== null);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const didInitRef = useRef(false);
+
+  // Load history once per mounted thread. The ref guard means the id that
+  // arrives after the first message (conversation_id: null -> created id)
+  // does not trigger a reload — the local thread already has every message.
+  useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+    if (!conversationId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await api.getConversation(conversationId);
+        if (cancelled) return;
+        setMessages(detail.messages.map((m) => toMessage(m, conversationId)));
+      } catch (err) {
+        if (cancelled) return;
+        setError(
+          err instanceof ApiError
+            ? err.status === 404
+              ? "Conversation not found — it may have been deleted."
+              : err.message
+            : "Unexpected error.",
+        );
+        if (err instanceof ApiError && err.status === 401) setNeedsKey(true);
+      } finally {
+        if (!cancelled) setLoadingThread(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -50,8 +111,14 @@ export default function Chat({ onAskKey }: ChatProps) {
     setError(null);
     setNeedsKey(false);
     try {
-      const response = await api.chat({ question });
+      const response = await api.chat({
+        question,
+        conversation_id: conversationId ?? null,
+      });
       setMessages((prev) => [...prev, { role: "assistant", text: response.answer, response }]);
+      if (!conversationId && response.conversation_id) {
+        onConversationCreated(response.conversation_id);
+      }
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -87,8 +154,13 @@ export default function Chat({ onAskKey }: ChatProps) {
 
       {/* Thread */}
       <div className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center px-4 py-12">
+        {loadingThread ? (
+          <div className="flex h-full items-center justify-center gap-2.5 text-sm text-muted">
+            <Loader2 size={17} className="animate-spin text-accent" />
+            Loading conversation…
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="flex min-h-full flex-col items-center justify-center px-4 py-12">
             <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent text-on-accent text-xl font-bold">
               O
             </span>
@@ -114,6 +186,9 @@ export default function Chat({ onAskKey }: ChatProps) {
                 </button>
               ))}
             </div>
+            <p className="mt-6 text-center text-xs text-faint">
+              Chats save automatically — resume any of them from the sidebar.
+            </p>
           </div>
         ) : (
           <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6">
@@ -193,12 +268,12 @@ export default function Chat({ onAskKey }: ChatProps) {
                   submit();
                 }
               }}
-              disabled={busy}
+              disabled={busy || loadingThread}
               className="max-h-40 flex-1 resize-none bg-transparent text-[15px] leading-6 outline-none placeholder:text-faint disabled:opacity-60"
             />
             <button
               onClick={submit}
-              disabled={busy || !input.trim()}
+              disabled={busy || loadingThread || !input.trim()}
               aria-label="Send"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-35"
             >

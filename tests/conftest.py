@@ -174,11 +174,14 @@ def db_conn() -> Iterator:
 
     from sqlalchemy import select
 
-    from app.db.models import Document
+    from app.db.models import ChatMessage, Conversation, Document
 
     with engine.connect() as conn:
         existing_ids = set(
             conn.execute(select(Document.id)).scalars()
+        )
+        existing_conversation_ids = set(
+            conn.execute(select(Conversation.id)).scalars()
         )
 
     yield engine
@@ -190,4 +193,18 @@ def db_conn() -> Iterator:
             )
         else:
             conn.execute(delete(Document))
+        if existing_conversation_ids:
+            conn.execute(
+                delete(ChatMessage).where(
+                    ChatMessage.conversation_id.not_in(existing_conversation_ids)
+                )
+            )
+            conn.execute(
+                delete(Conversation).where(
+                    Conversation.id.not_in(existing_conversation_ids)
+                )
+            )
+        else:
+            conn.execute(delete(ChatMessage))
+            conn.execute(delete(Conversation))
     engine.dispose()

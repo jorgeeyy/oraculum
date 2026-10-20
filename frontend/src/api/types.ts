@@ -71,6 +71,7 @@ export interface ChatResponse {
   model: string;
   retrieval_ms: number;
   generation_ms: number;
+  conversation_id: string | null;
 }
 
 export interface ReadyResponse {
@@ -83,6 +84,35 @@ export interface ChatRequest {
   question: string;
   top_k?: number;
   document_id?: string;
+  conversation_id?: string | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MessageRecord {
+  id: string;
+  role: string;
+  content: string;
+  status: string | null;
+  sources: Source[];
+  model: string | null;
+  retrieval_ms: number | null;
+  generation_ms: number | null;
+  created_at: string;
+}
+
+export interface ConversationDetail {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: MessageRecord[];
 }
 
 export interface RetrievalRequest {

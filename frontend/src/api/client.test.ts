@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch, setApiKey } from "./client";
+import { ApiError, api, apiFetch, setApiKey } from "./client";
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -120,5 +120,121 @@ describe("apiFetch", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error.status).toBe(0);
     expect(error.message).toContain("reach the server");
+  });
+});
+
+describe("conversation endpoints", () => {
+  it("chat includes conversation_id (null for a new thread) in the body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        question: "q",
+        answer: "a",
+        status: "answered",
+        sources: [],
+        model: "m",
+        retrieval_ms: 1,
+        generation_ms: 2,
+        conversation_id: "conv-1",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await api.chat({ question: "q", conversation_id: null });
+
+    expect(response.conversation_id).toBe("conv-1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/chat");
+    expect(JSON.parse(init.body as string)).toEqual({
+      question: "q",
+      conversation_id: null,
+    });
+  });
+
+  it("listConversations fetches GET /conversations", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse([
+        {
+          id: "conv-1",
+          title: "Leave policy",
+          message_count: 2,
+          created_at: "2026-10-19T10:00:00Z",
+          updated_at: "2026-10-19T10:00:00Z",
+        },
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const list = await api.listConversations();
+
+    expect(list).toHaveLength(1);
+    expect(list[0].title).toBe("Leave policy");
+    expect(fetchMock.mock.calls[0][0]).toBe("/conversations");
+  });
+
+  it("getConversation fetches the detail by id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "conv-1",
+        title: "Leave policy",
+        created_at: "2026-10-19T10:00:00Z",
+        updated_at: "2026-10-19T10:00:00Z",
+        messages: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const detail = await api.getConversation("conv-1");
+
+    expect(detail.id).toBe("conv-1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/conversations/conv-1");
+  });
+
+  it("deleteConversation issues DELETE and returns the confirmation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ deleted: "true", conversation_id: "conv-1" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const body = await api.deleteConversation("conv-1");
+
+    expect(body.conversation_id).toBe("conv-1");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/conversations/conv-1");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("renameConversation PATCHes the new title", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "conv-1",
+        title: "New title",
+        message_count: 4,
+        created_at: "2026-10-19T10:00:00Z",
+        updated_at: "2026-10-19T10:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const summary = await api.renameConversation("conv-1", "New title");
+
+    expect(summary.title).toBe("New title");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/conversations/conv-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ title: "New title" });
+  });
+
+  it("surfaces a 404 from getConversation as ApiError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ detail: "Conversation not found." }, { status: 404 }),
+      ),
+    );
+
+    const error = await capturedError(api.getConversation("gone"));
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(404);
   });
 });

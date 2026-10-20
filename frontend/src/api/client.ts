@@ -4,6 +4,8 @@ import type {
   ChatRequest,
   ChatResponse,
   ChunksResponse,
+  ConversationDetail,
+  ConversationSummary,
   DocumentRecord,
   ReadyResponse,
   RetrievalRequest,
@@ -127,6 +129,19 @@ function post<T>(path: string, body: unknown): Promise<T> {
 export const api = {
   chat: (req: ChatRequest) => post<ChatResponse>("/chat", req),
   retrieve: (req: RetrievalRequest) => post<RetrievalResponse>("/retrieve", req),
+  listConversations: () => apiFetch<ConversationSummary[]>("/conversations"),
+  getConversation: (id: string) =>
+    apiFetch<ConversationDetail>(`/conversations/${id}`),
+  deleteConversation: (id: string) =>
+    apiFetch<{ deleted: string; conversation_id: string }>(
+      `/conversations/${id}`,
+      { method: "DELETE" },
+    ),
+  renameConversation: (id: string, title: string) =>
+    apiFetch<ConversationSummary>(`/conversations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
   listDocuments: () => apiFetch<DocumentRecord[]>("/documents"),
   getChunks: (id: string) =>
     apiFetch<ChunksResponse>(`/documents/${id}/chunks`),

@@ -49,7 +49,11 @@ def configure_request_logging() -> None:
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
+    
     async def dispatch(self, request: Request, call_next) -> Response:
+        """Process a request while tracking and returning its correlation ID. It also logs the request outcome and duration unless the path is excluded from access logging."""
+        
+        incoming = request.headers.get("X-Request-ID", "")
         incoming = request.headers.get("X-Request-ID", "")
         request_id = incoming[:64] if incoming else uuid.uuid4().hex[:16]
         token = request_id_var.set(request_id)

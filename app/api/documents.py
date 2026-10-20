@@ -1,15 +1,13 @@
 import hashlib
 import logging
 import uuid
-from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
+from app.api.deps import get_db_session
 from app.config import Settings, get_settings
 from app.db import repositories
-from app.db.session import get_engine
 from app.schemas.documents import (
     ChunksResponse,
     DeleteResponse,
@@ -19,7 +17,6 @@ from app.schemas.documents import (
 from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
 from app.services.errors import (
-    DatabaseNotConfiguredError,
     EmbeddingNotConfiguredError,
     EmbeddingServiceError,
     EmptyExtractionError,
@@ -62,30 +59,6 @@ def get_embedder(settings: Settings = Depends(get_settings)) -> Embedder:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _session_dep() -> Iterator[Session]:
-    """Yield a session, mapping config/driver failures to HTTP 503.
-
-    Connection is attempted eagerly so an unreachable database produces a
-    clean 503 instead of a 500 mid-request. Driver details are logged,
-    never returned to the client.
-    """
-    try:
-        session = sessionmaker(bind=get_engine(), expire_on_commit=False)()
-        session.connection()
-    except DatabaseNotConfiguredError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except SQLAlchemyError as exc:
-        logger.exception("Database connection failed")
-        raise HTTPException(
-            status_code=503,
-            detail="Database is unavailable. Check DATABASE_URL and the server.",
-        ) from exc
-    try:
-        yield session
-    finally:
-        session.close()
-
-
 def _parse_document_id(document_id: str) -> str:
     try:
         return str(uuid.UUID(document_id))
@@ -117,7 +90,7 @@ async def upload_document(
     settings: Settings = Depends(get_settings),
     embedder: Embedder = Depends(get_embedder),
     store: VectorStore = Depends(get_vector_store),
-    session: Session = Depends(_session_dep),
+    session: Session = Depends(get_db_session),
 ) -> UploadDocumentResponse:
     data = await _read_bounded(file, settings.max_file_size_bytes)
     filename = file.filename or ""
@@ -222,13 +195,13 @@ async def upload_document(
 
 
 @router.get("", response_model=list[DocumentRecord])
-def list_documents(session: Session = Depends(_session_dep)) -> list[DocumentRecord]:
+def list_documents(session: Session = Depends(get_db_session)) -> list[DocumentRecord]:
     return repositories.list_documents(session)
 
 
 @router.get("/{document_id}", response_model=DocumentRecord)
 def get_document(
-    document_id: str, session: Session = Depends(_session_dep)
+    document_id: str, session: Session = Depends(get_db_session)
 ) -> DocumentRecord:
     document_id = _parse_document_id(document_id)
     record = repositories.get_document(session, document_id)
@@ -242,7 +215,7 @@ def get_document_chunks(
     document_id: str,
     storage: DocumentStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
-    session: Session = Depends(_session_dep),
+    session: Session = Depends(get_db_session),
 ) -> ChunksResponse:
     document_id = _parse_document_id(document_id)
     record = repositories.get_document(session, document_id)
@@ -281,7 +254,7 @@ def delete_document(
     document_id: str,
     storage: DocumentStorage = Depends(get_storage),
     store: VectorStore = Depends(get_vector_store),
-    session: Session = Depends(_session_dep),
+    session: Session = Depends(get_db_session),
 ) -> DeleteResponse:
     document_id = _parse_document_id(document_id)
     record = repositories.get_document(session, document_id)
