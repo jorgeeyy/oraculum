@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   KeyRound,
   Menu,
@@ -37,6 +39,14 @@ function readIsDark(): boolean {
   return document.documentElement.classList.contains("dark");
 }
 
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem("rag.sidebarCollapsed") === "1";
+  } catch {
+    return false;
+  }
+}
+
 const DOC_STATUS_DOT: Record<DocumentRecord["status"], string> = {
   completed: "bg-emerald-500",
   processing: "bg-amber-500 animate-pulse",
@@ -50,6 +60,7 @@ export default function App() {
   const [keyDraft, setKeyDraft] = useState(getApiKey() ?? "");
   const [apiKey, setApiKeyState] = useState(getApiKey());
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [isDark, setIsDark] = useState(readIsDark);
 
   // Chat history. `activeId` is the conversation the thread belongs to;
@@ -103,6 +114,18 @@ export default function App() {
       /* storage unavailable; theme still applies for this session */
     }
     setIsDark(next);
+  };
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("rag.sidebarCollapsed", next ? "1" : "0");
+      } catch {
+        /* storage unavailable; collapse still applies for this session */
+      }
+      return next;
+    });
   };
 
   const navigate = (next: Tab) => {
@@ -167,26 +190,42 @@ export default function App() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-line bg-panel transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
+        className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-line bg-panel transition-[width,transform] duration-200 lg:static lg:z-auto lg:translate-x-0 ${
+          collapsed ? "lg:w-16" : ""
+        } ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}
       >
-        <div className="flex h-14 items-center justify-between px-4">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent">
+        <div
+          className={`flex h-14 shrink-0 items-center px-4 ${
+            collapsed ? "lg:justify-center lg:px-2" : "justify-between"
+          }`}
+        >
+          <div
+            className={`flex items-center gap-2.5 ${collapsed ? "lg:hidden" : ""}`}
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent text-on-accent">
               <MessageSquare size={16} strokeWidth={2.25} />
             </span>
             <span className="text-sm font-semibold tracking-tight">
               Oraculum
             </span>
           </div>
-          <button
-            className="rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink lg:hidden"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              className="hidden rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink lg:block"
+              onClick={toggleCollapsed}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            </button>
+            <button
+              className="rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink lg:hidden"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close sidebar"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Nav + nested chat history (scrolls as one; footer stays pinned) */}
@@ -194,7 +233,28 @@ export default function App() {
           <nav className="flex flex-col gap-0.5">
             {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
               <Fragment key={id}>
-                {id === "chat" ? (
+                {collapsed ? (
+                  <button
+                    onClick={() => {
+                      if (id === "chat") {
+                        navigate(id);
+                        setChatsExpanded(true);
+                      } else {
+                        setSelectedDocId(null);
+                        navigate(id);
+                        setDocsExpanded(true);
+                      }
+                    }}
+                    title={label}
+                    className={`flex w-full items-center justify-center rounded-lg py-2 text-sm transition-colors ${
+                      tab === id
+                        ? "bg-surface font-medium text-ink shadow-sm ring-1 ring-line"
+                        : "text-muted hover:bg-surface/70 hover:text-ink"
+                    }`}
+                  >
+                    <Icon size={16} strokeWidth={2} />
+                  </button>
+                ) : id === "chat" ? (
                   <div
                     className={`group flex items-center rounded-lg transition-colors ${
                       tab === id
@@ -283,7 +343,7 @@ export default function App() {
                 )}
 
                 {/* Document list, indented under the Documents nav item */}
-                {id === "documents" && docsExpanded && (
+                {!collapsed && id === "documents" && docsExpanded && (
                   <div className="mb-1 ml-5 mt-1 flex flex-col gap-0.5 border-l border-line pl-2">
                     {docList.length === 0 ? (
                       <div className="flex items-start gap-2 px-2.5 py-1.5 text-xs leading-4 text-faint">
@@ -321,7 +381,7 @@ export default function App() {
                 )}
 
                 {/* Chat history, indented under the Chat nav item */}
-                {id === "chat" && chatsExpanded && (
+                {!collapsed && id === "chat" && chatsExpanded && (
                   <div className="mb-1 ml-5 mt-1 flex flex-col gap-0.5 border-l border-line pl-2">
                     <button
                       onClick={startNewChat}
@@ -399,26 +459,36 @@ export default function App() {
         </div>
 
         <div className="flex flex-col gap-1 border-t border-line p-3">
-          <HealthBadge />
+          <div className={collapsed ? "lg:hidden" : ""}>
+            <HealthBadge />
+          </div>
           <button
             onClick={() => setKeyModalOpen(true)}
-            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink"
+            title={apiKey ? "API key (configured)" : "API key (not set)"}
+            className={`flex items-center rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink ${
+              collapsed ? "lg:justify-center lg:px-0" : "gap-2.5"
+            }`}
           >
             <KeyRound size={16} strokeWidth={2} />
-            API key
+            <span className={collapsed ? "lg:hidden" : ""}>API key</span>
             <span
-              className={`ml-auto h-1.5 w-1.5 rounded-full ${
+              className={`h-1.5 w-1.5 rounded-full ${
                 apiKey ? "bg-emerald-500" : "bg-faint"
-              }`}
+              } ${collapsed ? "" : "ml-auto"}`}
               title={apiKey ? "Key configured" : "No key set"}
             />
           </button>
           <button
             onClick={toggleTheme}
-            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink"
+            title={isDark ? "Light mode" : "Dark mode"}
+            className={`flex items-center rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink ${
+              collapsed ? "lg:justify-center lg:px-0" : "gap-2.5"
+            }`}
           >
             {isDark ? <Sun size={16} strokeWidth={2} /> : <Moon size={16} strokeWidth={2} />}
-            {isDark ? "Light mode" : "Dark mode"}
+            <span className={collapsed ? "lg:hidden" : ""}>
+              {isDark ? "Light mode" : "Dark mode"}
+            </span>
           </button>
         </div>
       </aside>

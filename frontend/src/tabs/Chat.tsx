@@ -239,12 +239,13 @@ export default function Chat({
                       <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
                         Sources
                       </div>
-                      <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="flex flex-wrap gap-2">
                         {m.response.sources.map((s, idx) => (
                           <SourceCard
                             key={s.source_id}
                             source={s}
                             index={idx + 1}
+                            active={evidence?.source_id === s.source_id}
                             onOpen={() => setEvidence(s)}
                           />
                         ))}

@@ -94,14 +94,6 @@ export default function EvidencePanel({ source, onClose }: Props) {
         </button>
       </div>
 
-      {/* The excerpt the answer was grounded in */}
-      <div className="shrink-0 border-b border-line px-4 py-3">
-        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
-          Cited evidence
-        </div>
-        <p className="text-[13px] leading-5 text-muted">{source.excerpt}</p>
-      </div>
-
       <div className="min-h-0 flex-1">
         {error && (
           <div className="m-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-600 dark:text-red-400">
