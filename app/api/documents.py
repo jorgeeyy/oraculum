@@ -20,6 +20,7 @@ from app.db import repositories
 from app.schemas.documents import (
     ChunksResponse,
     DeleteResponse,
+    DocumentContentResponse,
     DocumentRecord,
     UploadDocumentResponse,
 )
@@ -42,6 +43,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 _READ_CHUNK_BYTES = 1024 * 1024
+
+_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+}
 
 
 def get_storage(settings: Settings = Depends(get_settings)) -> DocumentStorage:
@@ -233,6 +240,84 @@ def get_document_chunks(
         chunk_overlap_tokens=settings.chunk_overlap_tokens,
         chunk_count=len(chunks),
         chunks=chunks,
+    )
+
+
+@router.get("/{document_id}/content", response_model=DocumentContentResponse)
+def get_document_content(
+    document_id: str,
+    storage: DocumentStorage = Depends(get_storage),
+    session: Session = Depends(get_db_session),
+) -> DocumentContentResponse:
+    """Return the document's full extracted text (no chunking)."""
+    document_id = _parse_document_id(document_id)
+    record = repositories.get_document(session, document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    try:
+        data = storage.load(document_id, f".{record.file_type}")
+    except StoredFileMissingError as exc:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"Stored file is missing for document {document_id}. "
+                "Re-upload the document or delete this record."
+            ),
+        ) from exc
+
+    try:
+        pages = extract_pages(record.original_filename, data)
+    except Exception as exc:
+        logger.exception("Reading document text failed for %s", document_id)
+        raise HTTPException(status_code=422, detail=f"Could not read document: {exc}") from exc
+
+    if len(pages) == 1:
+        text = pages[0].text
+    else:
+        text = "\n\n".join(
+            f"--- Page {page.page_number} ---\n{page.text}" for page in pages
+        )
+
+    return DocumentContentResponse(
+        document_id=document_id,
+        filename=record.original_filename,
+        file_type=record.file_type,
+        page_count=len(pages),
+        text=text,
+    )
+
+
+@router.get("/{document_id}/file")
+def get_document_file(
+    document_id: str,
+    storage: DocumentStorage = Depends(get_storage),
+    session: Session = Depends(get_db_session),
+) -> Response:
+    """Serve the stored file's raw bytes (e.g. for an in-browser PDF view)."""
+    document_id = _parse_document_id(document_id)
+    record = repositories.get_document(session, document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    try:
+        data = storage.load(document_id, f".{record.file_type}")
+    except StoredFileMissingError as exc:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"Stored file is missing for document {document_id}. "
+                "Re-upload the document or delete this record."
+            ),
+        ) from exc
+
+    media_type = _MEDIA_TYPES.get(f".{record.file_type}", "application/octet-stream")
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{record.original_filename}"'
+        },
     )
 
 

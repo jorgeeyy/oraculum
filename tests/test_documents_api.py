@@ -151,6 +151,93 @@ class TestDocumentLifecycle:
         assert smaller["chunk_size_tokens"] == 50
 
 
+class TestDocumentContent:
+    def test_content_returns_full_original_text(
+        self, client: TestClient, db_conn
+    ) -> None:
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 202
+        document_id = response.json()["id"]
+
+        content = client.get(f"/documents/{document_id}/content")
+        assert content.status_code == 200
+        body = content.json()
+        assert body["document_id"] == document_id
+        assert body["filename"] == "handbook.md"
+        assert body["file_type"] == "md"
+        assert body["page_count"] == 1
+        assert body["text"] == SAMPLE_TXT.decode()
+
+    def test_content_pdf_reports_pages(
+        self, client: TestClient, db_conn
+    ) -> None:
+        data = make_pdf("Annual leave policy: employees receive 20 days of paid leave.")
+        response = upload(client, "handbook.pdf", data, "application/pdf")
+        assert response.status_code == 202
+        document_id = response.json()["id"]
+
+        content = client.get(f"/documents/{document_id}/content")
+        assert content.status_code == 200
+        body = content.json()
+        assert body["page_count"] >= 1
+        assert "20 days" in body["text"]
+
+    def test_content_unknown_document_returns_404(self, client: TestClient) -> None:
+        assert client.get(f"/documents/{uuid.uuid4()}/content").status_code == 404
+
+    def test_content_missing_stored_file_returns_410(
+        self, client: TestClient, db_conn
+    ) -> None:
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 202
+        document_id = response.json()["id"]
+        (client.storage.uploads_dir / f"{document_id}.md").unlink()
+
+        content = client.get(f"/documents/{document_id}/content")
+        assert content.status_code == 410
+        assert "Re-upload" in content.json()["detail"]
+
+
+class TestDocumentFile:
+    def test_file_serves_raw_pdf(
+        self, client: TestClient, db_conn
+    ) -> None:
+        data = make_pdf("Annual leave policy: employees receive 20 days of paid leave.")
+        response = upload(client, "handbook.pdf", data, "application/pdf")
+        assert response.status_code == 202
+        document_id = response.json()["id"]
+
+        file_response = client.get(f"/documents/{document_id}/file")
+        assert file_response.status_code == 200
+        assert file_response.headers["content-type"].startswith("application/pdf")
+        assert file_response.content[:5] == b"%PDF-"
+
+    def test_file_serves_raw_markdown(
+        self, client: TestClient, db_conn
+    ) -> None:
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 202
+        document_id = response.json()["id"]
+
+        file_response = client.get(f"/documents/{document_id}/file")
+        assert file_response.status_code == 200
+        assert "text/markdown" in file_response.headers["content-type"]
+        assert file_response.content == SAMPLE_TXT
+
+    def test_file_unknown_document_returns_404(self, client: TestClient) -> None:
+        assert client.get(f"/documents/{uuid.uuid4()}/file").status_code == 404
+
+    def test_file_missing_stored_file_returns_410(
+        self, client: TestClient, db_conn
+    ) -> None:
+        response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
+        assert response.status_code == 202
+        document_id = response.json()["id"]
+        (client.storage.uploads_dir / f"{document_id}.md").unlink()
+
+        assert client.get(f"/documents/{document_id}/file").status_code == 410
+
+
 class TestIndexing:
     def test_upload_embeds_and_indexes_chunks(
         self,

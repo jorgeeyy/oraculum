@@ -3,9 +3,9 @@
 import type {
   ChatRequest,
   ChatResponse,
-  ChunksResponse,
   ConversationDetail,
   ConversationSummary,
+  DocumentContentResponse,
   DocumentRecord,
   ReadyResponse,
   RetrievalRequest,
@@ -143,8 +143,8 @@ export const api = {
       body: JSON.stringify({ title }),
     }),
   listDocuments: () => apiFetch<DocumentRecord[]>("/documents"),
-  getChunks: (id: string) =>
-    apiFetch<ChunksResponse>(`/documents/${id}/chunks`),
+  getContent: (id: string) =>
+    apiFetch<DocumentContentResponse>(`/documents/${id}/content`),
   deleteDocument: (id: string) =>
     apiFetch<{ deleted: boolean; document_id: string }>(
       `/documents/${id}`,

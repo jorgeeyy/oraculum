@@ -14,8 +14,9 @@ import {
   X,
 } from "lucide-react";
 import { api, getApiKey, setApiKey } from "./api/client";
-import type { ConversationSummary } from "./api/types";
+import type { ConversationSummary, DocumentRecord } from "./api/types";
 import HealthBadge from "./components/HealthBadge";
+import { useDocuments } from "./hooks/useDocuments";
 import Chat from "./tabs/Chat";
 import Documents from "./tabs/Documents";
 
@@ -36,6 +37,13 @@ function readIsDark(): boolean {
   return document.documentElement.classList.contains("dark");
 }
 
+const DOC_STATUS_DOT: Record<DocumentRecord["status"], string> = {
+  completed: "bg-emerald-500",
+  processing: "bg-amber-500 animate-pulse",
+  pending: "bg-sky-500",
+  failed: "bg-red-500",
+};
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("chat");
   const [keyModalOpen, setKeyModalOpen] = useState(false);
@@ -53,6 +61,16 @@ export default function App() {
   const [chatKey, setChatKey] = useState("new");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [chatsExpanded, setChatsExpanded] = useState(true);
+  const [docsExpanded, setDocsExpanded] = useState(true);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+
+  const {
+    documents: docList,
+    loading: docsLoading,
+    error: docsError,
+    unauthorized: docsUnauthorized,
+    refresh: refreshDocuments,
+  } = useDocuments();
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -105,6 +123,12 @@ export default function App() {
     setChatKey(id);
     setPendingDeleteId(null);
     setTab("chat");
+    setSidebarOpen(false);
+  };
+
+  const selectDocument = (id: string) => {
+    setSelectedDocId(id);
+    setTab("documents");
     setSidebarOpen(false);
   };
 
@@ -211,17 +235,89 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={() => navigate(id)}
-                    className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
+                  <div
+                    className={`group flex items-center rounded-lg transition-colors ${
                       tab === id
-                        ? "bg-surface font-medium text-ink shadow-sm ring-1 ring-line"
-                        : "text-muted hover:bg-surface/70 hover:text-ink"
+                        ? "bg-surface shadow-sm ring-1 ring-line"
+                        : "hover:bg-surface/70"
                     }`}
                   >
-                    <Icon size={16} strokeWidth={2} />
-                    {label}
-                  </button>
+                    <button
+                      onClick={() => {
+                        setSelectedDocId(null);
+                        navigate(id);
+                        setDocsExpanded(true);
+                      }}
+                      className={`flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+                        tab === id
+                          ? "font-medium text-ink"
+                          : "text-muted group-hover:text-ink"
+                      }`}
+                    >
+                      <Icon size={16} strokeWidth={2} />
+                      {label}
+                      {docList.length > 0 && (
+                        <span className="ml-auto shrink-0 text-xs text-faint">
+                          {docList.length}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setDocsExpanded((v) => !v)}
+                      aria-expanded={docsExpanded}
+                      aria-label={
+                        docsExpanded
+                          ? "Collapse document list"
+                          : "Expand document list"
+                      }
+                      className="mr-1.5 shrink-0 rounded-md p-1 text-faint transition-colors hover:bg-surface hover:text-ink"
+                    >
+                      <ChevronDown
+                        size={14}
+                        className={`transition-transform duration-150 ${
+                          docsExpanded ? "" : "-rotate-90"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                )}
+
+                {/* Document list, indented under the Documents nav item */}
+                {id === "documents" && docsExpanded && (
+                  <div className="mb-1 ml-5 mt-1 flex flex-col gap-0.5 border-l border-line pl-2">
+                    {docList.length === 0 ? (
+                      <div className="flex items-start gap-2 px-2.5 py-1.5 text-xs leading-4 text-faint">
+                        <FileText size={14} className="mt-px shrink-0" />
+                        <span>
+                          {docsError && !docsLoading
+                            ? "Documents couldn't be loaded — is the server reachable?"
+                            : "No documents yet — upload from the Documents tab"}
+                        </span>
+                      </div>
+                    ) : (
+                      docList.map((doc) => (
+                        <button
+                          key={doc.id}
+                          onClick={() => selectDocument(doc.id)}
+                          className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors ${
+                            selectedDocId === doc.id
+                              ? "bg-surface font-medium text-ink shadow-sm ring-1 ring-line"
+                              : "text-muted hover:bg-surface/70 hover:text-ink"
+                          }`}
+                          title={doc.status}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                              DOC_STATUS_DOT[doc.status] ?? "bg-faint"
+                            }`}
+                          />
+                          <span className="truncate">
+                            {doc.original_filename}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 )}
 
                 {/* Chat history, indented under the Chat nav item */}
@@ -352,7 +448,16 @@ export default function App() {
             />
           )}
           {tab === "documents" && (
-            <Documents onAskKey={() => setKeyModalOpen(true)} />
+            <Documents
+              onAskKey={() => setKeyModalOpen(true)}
+              documents={docList}
+              loading={docsLoading}
+              loadError={docsError}
+              unauthorized={docsUnauthorized}
+              selectedDocId={selectedDocId}
+              onClearSelection={() => setSelectedDocId(null)}
+              refresh={refreshDocuments}
+            />
           )}
         </main>
       </div>

@@ -28,12 +28,12 @@ export interface UploadDocumentResponse extends DocumentRecord {
   chunks: Chunk[];
 }
 
-export interface ChunksResponse {
+export interface DocumentContentResponse {
   document_id: string;
-  chunk_size_tokens: number;
-  chunk_overlap_tokens: number;
-  chunk_count: number;
-  chunks: Chunk[];
+  filename: string;
+  file_type: string;
+  page_count: number;
+  text: string;
 }
 
 export interface RetrievalResult {

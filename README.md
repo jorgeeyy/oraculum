@@ -342,10 +342,11 @@ oraculum/
 │   ├── index.html
 │   └── src/
 │       ├── main.tsx
-│       ├── App.tsx               # Tab shell + chat-history sidebar + API-key modal
+│       ├── App.tsx               # Tab shell + chat/document sidebar + API-key modal
 │       ├── index.css               # Tailwind v4 entry: @theme tokens, dark palette
 │       ├── api/                  # Typed fetch client + TS types + tests
-│       ├── components/           # HealthBadge, SourceCard, dropzone, modal
+│       ├── components/           # HealthBadge, SourceCard, upload dropzone
+│       ├── hooks/                # useDocuments: shared list + status polling
 │       └── tabs/                 # Chat, Documents screens
 ├── .env.example
 ├── pyproject.toml

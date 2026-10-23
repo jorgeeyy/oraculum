@@ -1,80 +1,77 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { FileText, Loader2, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeft, FileText, Trash2 } from "lucide-react";
+import DOMPurify from "dompurify";
+import { marked } from "marked";
 import { ApiError, api } from "../api/client";
-import type { DocumentRecord } from "../api/types";
-import ChunksModal from "../components/ChunksModal";
+import type { DocumentContentResponse, DocumentRecord } from "../api/types";
 import UploadDropzone from "../components/UploadDropzone";
 
 interface Props {
   onAskKey: () => void;
+  documents: DocumentRecord[];
+  loading: boolean;
+  loadError: string | null;
+  unauthorized: boolean;
+  selectedDocId: string | null;
+  onClearSelection: () => void;
+  refresh: () => Promise<void>;
 }
 
-const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
-
-function isIndexing(doc: DocumentRecord): boolean {
-  return doc.status === "pending" || doc.status === "processing";
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false });
+  return DOMPurify.sanitize(html);
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-const STATUS_STYLES: Record<string, string> = {
-  completed: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400",
-  failed: "bg-red-500/12 text-red-600 dark:text-red-400",
-  pending: "bg-sky-500/12 text-sky-600 dark:text-sky-400",
-  processing: "bg-amber-500/12 text-amber-600 dark:text-amber-400",
-};
-
-export default function Documents({ onAskKey }: Props) {
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+export default function Documents({
+  onAskKey,
+  documents,
+  loading,
+  loadError,
+  unauthorized,
+  selectedDocId,
+  onClearSelection,
+  refresh,
+}: Props) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [chunksFor, setChunksFor] = useState<DocumentRecord | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
-  const pollStartedAtRef = useRef<number | null>(null);
+  const [content, setContent] = useState<DocumentContentResponse | null>(null);
+  const [contentLoading, setContentLoading] = useState(false);
+  const [contentError, setContentError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      setDocuments(await api.listDocuments());
-      setError(null);
-    } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Could not load documents.",
-      );
-      if (err instanceof ApiError && err.status === 401) setNeedsKey(true);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Load metadata + text whenever the selection changes.
   useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Poll while any document is still being indexed; stops once none are
-  // in flight, and gives up after 5 minutes with a visible notice.
-  useEffect(() => {
-    if (!documents.some(isIndexing)) {
-      pollStartedAtRef.current = null;
+    if (!selectedDocId) {
+      setContent(null);
+      setContentError(null);
       return;
     }
-    if (pollStartedAtRef.current === null) {
-      pollStartedAtRef.current = Date.now();
-    } else if (Date.now() - pollStartedAtRef.current > POLL_TIMEOUT_MS) {
-      setError(
-        "Indexing is taking longer than expected. Refresh the page to check again.",
-      );
-      return;
-    }
-    const timer = window.setTimeout(refresh, POLL_INTERVAL_MS);
-    return () => window.clearTimeout(timer);
-  }, [documents, refresh]);
+    let cancelled = false;
+    setContentLoading(true);
+    setContentError(null);
+    setContent(null);
+    api
+      .getContent(selectedDocId)
+      .then((data) => {
+        if (!cancelled) setContent(data);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setContentError(
+            err instanceof ApiError
+              ? err.message
+              : "Could not load document contents.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setContentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId]);
 
   async function handleFile(file: File) {
     setBusy(true);
@@ -122,6 +119,75 @@ export default function Documents({ onAskKey }: Props) {
     }
   }
 
+  // Full-screen viewer for the selected document.
+  if (selectedDocId) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
+          <button
+            onClick={onClearSelection}
+            className="flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-muted transition-colors hover:bg-surface hover:text-ink"
+          >
+            <ArrowLeft size={16} strokeWidth={2} />
+            Back
+          </button>
+          <span className="min-w-0 truncate text-sm font-medium">
+            {content?.filename ?? "Document"}
+          </span>
+          {content && (
+            <span className="ml-auto shrink-0 rounded-full bg-surface px-2.5 py-0.5 text-xs text-faint ring-1 ring-line">
+              .{content.file_type}
+              {content.file_type !== "pdf" &&
+                ` · ${content.page_count} ${content.page_count === 1 ? "page" : "pages"}`}
+            </span>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1">
+          {contentError && (
+            <div className="m-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-600 dark:text-red-400">
+              {contentError}
+            </div>
+          )}
+          {contentLoading && (
+            <p className="py-12 text-center text-sm text-muted">
+              Loading document…
+            </p>
+          )}
+
+          {content && content.file_type === "pdf" && !contentError && (
+            <iframe
+              src={`/documents/${content.document_id}/file`}
+              title={content.filename}
+              className="h-full w-full border-0"
+            />
+          )}
+
+          {content && content.file_type === "md" && (
+            <div className="h-full overflow-y-auto px-6 py-6">
+              <div
+                className="markdown-body mx-auto max-w-3xl"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(content.text) }}
+              />
+            </div>
+          )}
+
+          {content &&
+            content.file_type !== "pdf" &&
+            content.file_type !== "md" && (
+              <div className="h-full overflow-y-auto px-6 py-6">
+                <pre className="mx-auto max-w-3xl whitespace-pre-wrap font-mono text-[13px] leading-6 text-muted">
+                  {content.text}
+                </pre>
+              </div>
+            )}
+        </div>
+      </div>
+    );
+  }
+
+  const bannerError = error ?? loadError;
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-4xl px-6 py-6">
@@ -132,10 +198,10 @@ export default function Documents({ onAskKey }: Props) {
           </span>
         </div>
 
-        {error && (
+        {bannerError && (
           <div className="mb-3 flex items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-600 dark:text-red-400">
-            <span className="flex-1">{error}</span>
-            {needsKey && (
+            <span className="flex-1">{bannerError}</span>
+            {(needsKey || unauthorized) && (
               <button
                 className="rounded-lg border border-red-500/40 px-2.5 py-1 text-xs font-medium hover:bg-red-500/15"
                 onClick={onAskKey}
@@ -159,7 +225,7 @@ export default function Documents({ onAskKey }: Props) {
               Loading documents…
             </p>
           )}
-          {!loading && documents.length === 0 && !error && (
+          {!loading && documents.length === 0 && !bannerError && (
             <p className="py-6 text-center text-sm text-muted">
               No documents yet — upload one above.
             </p>
@@ -170,7 +236,7 @@ export default function Documents({ onAskKey }: Props) {
               {documents.map((doc) => (
                 <div
                   key={doc.id}
-                  className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3 last:border-b-0 hover:bg-canvas/60"
+                  className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-b-0 hover:bg-canvas/60"
                 >
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
                     <FileText size={16} strokeWidth={2} />
@@ -180,54 +246,26 @@ export default function Documents({ onAskKey }: Props) {
                     <div className="truncate text-sm font-medium" title={doc.id}>
                       {doc.original_filename}
                     </div>
-                    <div className="truncate text-xs text-faint">
-                      .{doc.file_type} · {formatBytes(doc.size_bytes)} ·{" "}
-                      {new Date(doc.created_at).toLocaleString()} ·{" "}
-                      {doc.chunk_count ?? "—"} chunks
-                      {doc.error_message && ` · ${doc.error_message.slice(0, 60)}`}
-                    </div>
-                  </div>
-
-                  <span
-                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                      STATUS_STYLES[doc.status] ?? "bg-elevated text-muted"
-                    }`}
-                  >
-                    {isIndexing(doc) && (
-                      <Loader2 size={11} className="animate-spin" />
+                    {doc.status === "failed" && doc.error_message && (
+                      <div className="truncate text-xs text-red-600 dark:text-red-400">
+                        {doc.error_message}
+                      </div>
                     )}
-                    {doc.status}
-                  </span>
-
-                  <div className="flex items-center gap-1">
-                    <button
-                      className="rounded-lg px-2.5 py-1.5 text-xs text-muted transition-colors hover:bg-canvas hover:text-ink"
-                      onClick={() => setChunksFor(doc)}
-                    >
-                      Chunks
-                    </button>
-                    <button
-                      className="rounded-lg p-1.5 text-muted transition-colors hover:bg-red-500/10 hover:text-red-500"
-                      onClick={() => handleDelete(doc)}
-                      aria-label={`Delete ${doc.original_filename}`}
-                    >
-                      <Trash2 size={15} />
-                    </button>
                   </div>
+
+                  <button
+                    className="rounded-lg p-1.5 text-muted transition-colors hover:bg-red-500/10 hover:text-red-500"
+                    onClick={() => handleDelete(doc)}
+                    aria-label={`Delete ${doc.original_filename}`}
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
       </div>
-
-      {chunksFor && (
-        <ChunksModal
-          documentId={chunksFor.id}
-          filename={chunksFor.original_filename}
-          onClose={() => setChunksFor(null)}
-        />
-      )}
     </div>
   );
 }
