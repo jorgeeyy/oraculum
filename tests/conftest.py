@@ -1,8 +1,14 @@
 from collections.abc import Iterator
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, delete, text
+
+# Keep test runs out of the real application log file (Settings reads env
+# before .env, so this wins).
+os.environ["LOG_FILE"] = ""
 
 from app.api.chat import get_generator
 from app.api.documents import get_embedder, get_storage, get_vector_store

@@ -57,15 +57,30 @@ def create_document(
 
 
 def find_by_content_hash(session: Session, content_hash: str) -> DocumentRecord | None:
-    """Return the newest completed document with this content hash, if any.
+    """Return the newest active document with this content hash, if any.
 
-    Only completed documents count: a failed ingest with the same bytes must
-    stay retryable as a fresh upload rather than short-circuiting as a
-    "duplicate".
+    Completed documents short-circuit as duplicates; pending/processing ones
+    short-circuit as "still being indexed" so a re-upload never starts a
+    second ingestion of the same bytes. Failed documents are excluded so the
+    same bytes stay retryable.
     """
     doc = session.scalars(
         select(Document)
-        .where(Document.content_hash == content_hash, Document.status == "completed")
+        .where(
+            Document.content_hash == content_hash,
+            Document.status.in_(["completed", "pending", "processing"]),
+        )
+        .order_by(Document.created_at.desc())
+        .limit(1)
+    ).first()
+    return _to_record(doc) if doc else None
+
+
+def find_failed_by_content_hash(session: Session, content_hash: str) -> DocumentRecord | None:
+    """Return the newest failed document with this content hash, if any."""
+    doc = session.scalars(
+        select(Document)
+        .where(Document.content_hash == content_hash, Document.status == "failed")
         .order_by(Document.created_at.desc())
         .limit(1)
     ).first()
@@ -80,6 +95,38 @@ def list_documents(session: Session) -> list[DocumentRecord]:
 def get_document(session: Session, document_id: str) -> DocumentRecord | None:
     doc = session.get(Document, uuid.UUID(document_id))
     return _to_record(doc) if doc else None
+
+
+def mark_processing(session: Session, document_id: str) -> None:
+    """Flip a queued document to processing (clears any stale error text)."""
+    session.execute(
+        update(Document)
+        .where(Document.id == uuid.UUID(document_id))
+        .values(status="processing", error_message=None)
+    )
+    session.commit()
+
+
+def reopen_document(
+    session: Session,
+    document_id: str,
+    *,
+    original_filename: str,
+    size_bytes: int,
+) -> None:
+    """Reset a failed document back to pending so identical bytes can retry."""
+    session.execute(
+        update(Document)
+        .where(Document.id == uuid.UUID(document_id))
+        .values(
+            status="pending",
+            error_message=None,
+            original_filename=original_filename,
+            size_bytes=size_bytes,
+            chunk_count=None,
+        )
+    )
+    session.commit()
 
 
 def complete_document(

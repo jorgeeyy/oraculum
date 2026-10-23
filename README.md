@@ -55,6 +55,7 @@ Copy-Item .env.example .env
 | `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |
 | `RATE_LIMIT_PER_MINUTE` | Per-IP cap on `/chat` + `/retrieve` (default `60`; `0` disables) |
 | `API_KEY` | When set, `/documents`, `/retrieve`, `/chat` require this key (unset = open) |
+| `LOG_FILE` | Rotating application log file (default `data/logs/oraculum.log`; set empty to disable) |
 
 `.env` is git-ignored. Never commit real keys.
 
@@ -111,11 +112,23 @@ npm run dev
   FastAPI serves `frontend/dist` at `/`, so the UI and API are same-origin and
   no CORS configuration is needed
 
+### Logs
+
+Application logs (requests with their `X-Request-ID`, ingestion progress,
+errors with tracebacks) are written to `data/logs/oraculum.log` in addition
+to stderr. The file rotates at 5 MB and keeps 3 backups. Tail it live:
+
+```powershell
+Get-Content data\logs\oraculum.log -Wait -Tail 50
+```
+
+Set `LOG_FILE=` (empty) in `.env` to disable file logging.
+
 ## API endpoints
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/documents` | Upload a PDF/TXT/Markdown file; extracts, chunks, embeds, and indexes it |
+| `POST` | `/documents` | Upload a PDF/TXT/Markdown file; validates synchronously, then extracts/chunks/embeds/indexes it in the background (`202` + `status: pending`; poll `GET /documents` for progress) |
 | `GET` | `/documents` | List ingested documents and their statuses |
 | `GET` | `/documents/{id}` | Document record, ingestion status, and indexing config used |
 | `GET` | `/documents/{id}/chunks` | Re-chunk a stored document with the current chunking configuration |
@@ -133,8 +146,9 @@ Try it with the committed sample documents:
 
 ```powershell
 # via Swagger UI: open http://127.0.0.1:8000/docs and upload samples/employee_handbook.md
-# or via curl:
+# or via curl (returns 202 immediately; ingestion continues in the background):
 curl -F "file=@samples/employee_handbook.md" http://127.0.0.1:8000/documents
+curl http://127.0.0.1:8000/documents   # poll until status is "completed" (or "failed")
 
 # semantic retrieval (no LLM involved):
 curl -X POST http://127.0.0.1:8000/retrieve -H "Content-Type: application/json" `
@@ -175,9 +189,18 @@ uv run python scripts/verify_index.py "How many days of annual leave?"
   handshake every call (seconds of overhead on Windows).
 - **Request tracing** — every request gets an `X-Request-ID` (incoming value is
   echoed, otherwise generated); log lines during the request carry the same ID.
+- **Background ingestion** — uploads only validate and persist the file plus
+  a `pending` row (`202 Accepted`); extraction, chunking, embedding, and
+  vector indexing run as a FastAPI background task, so a large PDF never
+  blocks the API or the chat. A process-wide semaphore ingests one document
+  at a time. Any failure is stamped on the row (`failed` + `error_message`)
+  instead of failing the upload. On startup, rows stuck in
+  `pending`/`processing` (e.g. after a crash) are re-queued automatically.
 - **Idempotent uploads** — SHA-256 of the file bytes is stored per document;
   re-uploading identical content returns the existing document with HTTP 200
-  instead of creating a duplicate record and vectors.
+  when it is already indexed, or HTTP 202 when it is still being indexed,
+  never a duplicate record. Identical bytes that previously failed are
+  retried in place (same row, error cleared).
 - **Rate limiting** — per-IP fixed window on `/chat` and `/retrieve`
   (default 60/min, HTTP 429 + `Retry-After`); `/documents` and health are exempt.
 - **Optional API-key auth** — set `API_KEY` and every non-health endpoint
@@ -205,8 +228,10 @@ navigation, no router) with two views:
   lists saved chats with a **New chat** button, resume on click, and
   inline delete; threads reload from `GET /conversations/{id}` and the
   first message of a new thread creates the conversation server-side
-- **Documents** — drag-and-drop upload (duplicate uploads are detected and
-  reported), list with status/chunks/size, view chunked text, delete
+- **Documents** — drag-and-drop upload (returns instantly; indexing runs in
+  the background and the list auto-refreshes every 2 s while anything is
+  pending/processing), duplicate uploads are detected and reported, list
+  with status/chunks/size, view chunked text, delete
 - **Health badge** — polls `/health/ready` every 30 s with dependency details
   on hover
 
@@ -277,6 +302,7 @@ oraculum/
 │       ├── text_extraction.py    # PDF/TXT/Markdown → pages (magic-byte validation)
 │       ├── chunking.py           # Pages → token-bounded overlapping chunks (tiktoken)
 │       ├── embeddings.py         # Batched OpenAI embeddings with bounded retries
+│       ├── ingestion.py          # Background pipeline: extract→chunk→embed→index + startup recovery
 │       ├── openai_client.py      # Shared cached OpenAI HTTP client
 │       ├── vector_store.py       # Persistent ChromaDB collection (upsert/query/delete)
 │       ├── retrieval.py          # retrieve_documents + recall/MRR metric functions
@@ -307,6 +333,7 @@ oraculum/
 │   ├── test_chat.py
 │   ├── test_reliability.py
 │   ├── test_documents_api.py
+│   ├── test_ingestion.py
 │   └── test_conversations.py
 ├── frontend/
 │   ├── package.json

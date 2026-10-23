@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { FileText, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { FileText, Loader2, Trash2 } from "lucide-react";
 import { ApiError, api } from "../api/client";
 import type { DocumentRecord } from "../api/types";
 import ChunksModal from "../components/ChunksModal";
@@ -7,6 +7,13 @@ import UploadDropzone from "../components/UploadDropzone";
 
 interface Props {
   onAskKey: () => void;
+}
+
+const POLL_INTERVAL_MS = 2000;
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function isIndexing(doc: DocumentRecord): boolean {
+  return doc.status === "pending" || doc.status === "processing";
 }
 
 function formatBytes(bytes: number): string {
@@ -18,6 +25,7 @@ function formatBytes(bytes: number): string {
 const STATUS_STYLES: Record<string, string> = {
   completed: "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400",
   failed: "bg-red-500/12 text-red-600 dark:text-red-400",
+  pending: "bg-sky-500/12 text-sky-600 dark:text-sky-400",
   processing: "bg-amber-500/12 text-amber-600 dark:text-amber-400",
 };
 
@@ -29,6 +37,7 @@ export default function Documents({ onAskKey }: Props) {
   const [loading, setLoading] = useState(true);
   const [chunksFor, setChunksFor] = useState<DocumentRecord | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
+  const pollStartedAtRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -48,26 +57,47 @@ export default function Documents({ onAskKey }: Props) {
     refresh();
   }, [refresh]);
 
+  // Poll while any document is still being indexed; stops once none are
+  // in flight, and gives up after 5 minutes with a visible notice.
+  useEffect(() => {
+    if (!documents.some(isIndexing)) {
+      pollStartedAtRef.current = null;
+      return;
+    }
+    if (pollStartedAtRef.current === null) {
+      pollStartedAtRef.current = Date.now();
+    } else if (Date.now() - pollStartedAtRef.current > POLL_TIMEOUT_MS) {
+      setError(
+        "Indexing is taking longer than expected. Refresh the page to check again.",
+      );
+      return;
+    }
+    const timer = window.setTimeout(refresh, POLL_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [documents, refresh]);
+
   async function handleFile(file: File) {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
       const record = await api.upload(file);
-      setNotice(
-        documents.some((d) => d.id === record.id)
-          ? `“${record.original_filename}” is already indexed — showing the existing document.`
-          : `“${record.original_filename}” uploaded and indexed.`,
-      );
+      if (documents.some((d) => d.id === record.id)) {
+        setNotice(
+          record.status === "completed"
+            ? `“${record.original_filename}” is already indexed — showing the existing document.`
+            : `“${record.original_filename}” is already being indexed — showing the existing document.`,
+        );
+      } else {
+        setNotice(
+          `“${record.original_filename}” uploaded — indexing in the background. This page updates automatically.`,
+        );
+      }
       await refresh();
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 400) setError(`Unsupported file: ${err.message}`);
         else if (err.status === 413) setError(err.message);
-        else if (err.status === 422)
-          setError(
-            `${err.message}${err.documentId ? ` (document ${err.documentId.slice(0, 8)}… marked failed)` : ""}`,
-          );
         else if (err.status === 503) setError(`Indexing unavailable: ${err.message}`);
         else setError(err.message);
         if (err.status === 401) setNeedsKey(true);
@@ -98,7 +128,7 @@ export default function Documents({ onAskKey }: Props) {
         <div className="mb-4 flex items-baseline justify-between">
           <h2 className="text-lg font-semibold">Documents</h2>
           <span className="text-sm text-faint">
-            {documents.length} indexed
+            {documents.length} {documents.length === 1 ? "document" : "documents"}
           </span>
         </div>
 
@@ -159,10 +189,13 @@ export default function Documents({ onAskKey }: Props) {
                   </div>
 
                   <span
-                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
                       STATUS_STYLES[doc.status] ?? "bg-elevated text-muted"
                     }`}
                   >
+                    {isIndexing(doc) && (
+                      <Loader2 size={11} className="animate-spin" />
+                    )}
                     {doc.status}
                   </span>
 

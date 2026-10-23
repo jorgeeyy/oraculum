@@ -42,21 +42,26 @@ class TestDocumentLifecycle:
         self, client: TestClient, db_conn
     ) -> None:
         response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
-        assert response.status_code == 201, response.text
+        assert response.status_code == 202, response.text
         body = response.json()
-        assert body["status"] == "completed"
-        assert body["chunk_count"] == 1
+        # The upload response is a snapshot taken before background ingestion.
+        assert body["status"] == "pending"
+        assert body["chunk_count"] is None
         assert body["file_type"] == "md"
-        assert len(body["chunks"]) == 1
-        assert "20 days" in body["chunks"][0]["text"]
+        assert body["chunks"] == []
         document_id = body["id"]
+
+        # TestClient runs BackgroundTasks inline, so the document is already
+        # finished by the time the upload() call returns.
+        detail = client.get(f"/documents/{document_id}")
+        assert detail.status_code == 200
+        detail_body = detail.json()
+        assert detail_body["status"] == "completed"
+        assert detail_body["chunk_count"] == 1
+        assert detail_body["original_filename"] == "handbook.md"
 
         listed = client.get("/documents").json()
         assert any(d["id"] == document_id for d in listed)
-
-        detail = client.get(f"/documents/{document_id}")
-        assert detail.status_code == 200
-        assert detail.json()["original_filename"] == "handbook.md"
 
         chunks = client.get(f"/documents/{document_id}/chunks")
         assert chunks.status_code == 200
@@ -64,6 +69,7 @@ class TestDocumentLifecycle:
         assert chunks_body["document_id"] == document_id
         assert chunks_body["chunk_count"] == 1
         assert chunks_body["chunk_size_tokens"] == get_settings().chunk_size_tokens
+        assert "20 days" in chunks_body["chunks"][0]["text"]
 
         deleted = client.delete(f"/documents/{document_id}")
         assert deleted.status_code == 200
@@ -76,18 +82,22 @@ class TestDocumentLifecycle:
     ) -> None:
         data = make_pdf("Annual leave policy: employees receive 20 days of paid leave.")
         response = upload(client, "handbook.pdf", data, "application/pdf")
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["status"] == "completed"
-        assert body["file_type"] == "pdf"
-        assert "20 days" in body["chunks"][0]["text"]
+        assert response.status_code == 202, response.text
+        assert response.json()["status"] == "pending"
+        document_id = response.json()["id"]
+
+        detail = client.get(f"/documents/{document_id}").json()
+        assert detail["status"] == "completed"
+        assert detail["file_type"] == "pdf"
+        chunks = client.get(f"/documents/{document_id}/chunks").json()
+        assert "20 days" in chunks["chunks"][0]["text"]
 
     def test_pdf_without_text_marks_failed(
         self, client: TestClient, db_conn
     ) -> None:
         response = upload(client, "scan.pdf", make_blank_pdf(), "application/pdf")
-        assert response.status_code == 422
-        document_id = response.json()["detail"]["document_id"]
+        assert response.status_code == 202
+        document_id = response.json()["id"]
         detail = client.get(f"/documents/{document_id}")
         assert detail.status_code == 200
         record = detail.json()
@@ -101,7 +111,7 @@ class TestDocumentLifecycle:
         self, client: TestClient, db_conn
     ) -> None:
         response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
-        assert response.status_code == 201
+        assert response.status_code == 202
         document_id = response.json()["id"]
 
         # simulate an orphaned record: file disappears from disk
@@ -122,7 +132,7 @@ class TestDocumentLifecycle:
             "Requests go through the HR portal. Carryover is capped at five days. "
         ) * 10
         response = upload(client, "handbook.txt", long_text.encode())
-        assert response.status_code == 201
+        assert response.status_code == 202
         document_id = response.json()["id"]
         baseline = client.get(f"/documents/{document_id}/chunks").json()
         assert baseline["chunk_count"] == 1
@@ -150,24 +160,26 @@ class TestIndexing:
         fake_vector_store,
     ) -> None:
         response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
-        assert response.status_code == 201, response.text
-        body = response.json()
-        document_id = body["id"]
+        assert response.status_code == 202, response.text
+        document_id = response.json()["id"]
+        assert response.json()["status"] == "pending"
 
-        # provenance is recorded on the document
-        assert body["status"] == "completed"
-        assert body["embedding_model"] == "test-embedding-model"
-        assert body["chunk_size_tokens"] == get_settings().chunk_size_tokens
-        assert body["chunk_overlap_tokens"] == get_settings().chunk_overlap_tokens
+        # provenance is recorded on the document after background ingestion
+        detail = client.get(f"/documents/{document_id}").json()
+        assert detail["status"] == "completed"
+        assert detail["embedding_model"] == "test-embedding-model"
+        assert detail["chunk_size_tokens"] == get_settings().chunk_size_tokens
+        assert detail["chunk_overlap_tokens"] == get_settings().chunk_overlap_tokens
 
         # the embedder saw the exact chunk texts
-        chunk_texts = [c["text"] for c in body["chunks"]]
+        chunks_body = client.get(f"/documents/{document_id}/chunks").json()
+        chunk_texts = [c["text"] for c in chunks_body["chunks"]]
         assert fake_embedder.batches == [chunk_texts]
 
         # the store received one vector per chunk, with matching citations
         assert len(fake_vector_store.upserts) == 1
         chunks, embeddings = fake_vector_store.upserts[0]
-        assert len(chunks) == len(embeddings) == body["chunk_count"]
+        assert len(chunks) == len(embeddings) == detail["chunk_count"]
         assert chunks[0].document_id == document_id
 
     def test_embedding_failure_marks_document_failed(
@@ -181,10 +193,8 @@ class TestIndexing:
         fake_embedder.embed = boom  # type: ignore[method-assign]
 
         response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
-        assert response.status_code == 503
-        detail = response.json()["detail"]
-        document_id = detail["document_id"]
-        assert "after 3 attempts" in detail["message"]
+        assert response.status_code == 202
+        document_id = response.json()["id"]
 
         record = client.get(f"/documents/{document_id}").json()
         assert record["status"] == "failed"
@@ -199,8 +209,8 @@ class TestIndexing:
         fake_vector_store.fail_upsert = VectorStoreError("index write failed")
 
         response = upload(client, "handbook.md", SAMPLE_TXT, "text/markdown")
-        assert response.status_code == 503
-        document_id = response.json()["detail"]["document_id"]
+        assert response.status_code == 202
+        document_id = response.json()["id"]
 
         record = client.get(f"/documents/{document_id}").json()
         assert record["status"] == "failed"

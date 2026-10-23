@@ -2,7 +2,16 @@ import hashlib
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+)
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db_session
@@ -18,14 +27,12 @@ from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
 from app.services.errors import (
     EmbeddingNotConfiguredError,
-    EmbeddingServiceError,
-    EmptyExtractionError,
     FileTooLargeError,
     StoredFileMissingError,
     UnsupportedFileTypeError,
     VectorStoreError,
 )
-from app.services.openai_client import get_openai_client
+from app.services.ingestion import build_embedder, ingest_document
 from app.services.storage import DocumentStorage
 from app.services.text_extraction import extract_pages, validate_upload
 from app.services.vector_store import VectorStore, get_vector_store
@@ -44,17 +51,7 @@ def get_storage(settings: Settings = Depends(get_settings)) -> DocumentStorage:
 def get_embedder(settings: Settings = Depends(get_settings)) -> Embedder:
     """Build the embedder eagerly so a missing API key surfaces as 503, not 500."""
     try:
-        return Embedder(
-            api_key=settings.openai_api_key,
-            model=settings.embedding_model,
-            batch_size=settings.embedding_batch_size,
-            max_retries=settings.embedding_max_retries,
-            client=(
-                get_openai_client(settings.openai_api_key, settings.embedding_timeout_seconds)
-                if settings.openai_api_key
-                else None
-            ),
-        )
+        return build_embedder(settings)
     except EmbeddingNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -82,9 +79,10 @@ async def _read_bounded(file: UploadFile, max_size: int) -> bytes:
     return bytes(data)
 
 
-@router.post("", response_model=UploadDocumentResponse, status_code=201)
+@router.post("", response_model=UploadDocumentResponse, status_code=202)
 async def upload_document(
     response: Response,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     storage: DocumentStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
@@ -92,6 +90,12 @@ async def upload_document(
     store: VectorStore = Depends(get_vector_store),
     session: Session = Depends(get_db_session),
 ) -> UploadDocumentResponse:
+    """Accept a file and queue background ingestion.
+
+    Validation (type/size) is synchronous; extraction, embedding, and vector
+    indexing run after the response so a large upload never blocks the app.
+    The returned record is `pending`; poll GET /documents for progress.
+    """
     data = await _read_bounded(file, settings.max_file_size_bytes)
     filename = file.filename or ""
 
@@ -107,19 +111,41 @@ async def upload_document(
     except UnsupportedFileTypeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Idempotent ingestion: identical bytes already indexed -> return the
-    # existing document instead of creating a duplicate record and vectors.
+    # Idempotent ingestion: identical bytes already completed -> duplicate;
+    # identical bytes still cooking -> "already being indexed". Either way
+    # no second record or job is created.
     content_hash = hashlib.sha256(data).hexdigest()
     existing = repositories.find_by_content_hash(session, content_hash)
     if existing is not None:
         logger.info(
-            "Duplicate upload of %r (hash=%s...) -> existing document %s",
+            "Duplicate upload of %r (hash=%s...) -> existing document %s (%s)",
             filename,
             content_hash[:12],
             existing.id,
+            existing.status,
         )
-        response.status_code = 200
+        response.status_code = 200 if existing.status == "completed" else 202
         return UploadDocumentResponse(**existing.model_dump(), chunks=[])
+
+    # Same bytes as a previously failed document -> retry in place.
+    failed = repositories.find_failed_by_content_hash(session, content_hash)
+    if failed is not None:
+        repositories.reopen_document(
+            session,
+            failed.id,
+            original_filename=filename,
+            size_bytes=len(data),
+        )
+        logger.info("Retrying failed document %s for %r", failed.id, filename)
+        background_tasks.add_task(
+            ingest_document,
+            failed.id,
+            embedder=embedder,
+            store=store,
+            storage=storage,
+        )
+        record = repositories.get_document(session, failed.id)
+        return UploadDocumentResponse(**record.model_dump(), chunks=[])
 
     document_id = storage.save(data, extension)
     try:
@@ -138,60 +164,21 @@ async def upload_document(
             status_code=503, detail="Could not record the document in the database."
         ) from None
 
-    try:
-        pages = extract_pages(filename, data)
-        chunks = chunk_pages(pages, document_id=document_id, filename=filename)
-    except (EmptyExtractionError, UnsupportedFileTypeError) as exc:
-        repositories.fail_document(session, document_id, str(exc))
-        logger.info("Ingestion failed for %s: %s", document_id, exc)
-        raise HTTPException(
-            status_code=422,
-            detail={"document_id": document_id, "message": str(exc)},
-        ) from exc
-    except Exception as exc:  # unexpected extraction/chunking failure
-        repositories.fail_document(session, document_id, f"Unexpected error: {exc}")
-        logger.exception("Unexpected ingestion failure for %s", document_id)
-        raise HTTPException(
-            status_code=500, detail="Document ingestion failed unexpectedly."
-        ) from exc
-
-    # Indexing: embed chunks and store vectors. The document is only marked
-    # completed after the vectors are safely in the store.
-    try:
-        vectors = embedder.embed([chunk.text for chunk in chunks])
-        store.upsert_chunks(chunks, vectors)
-    except (EmbeddingNotConfiguredError, EmbeddingServiceError, VectorStoreError) as exc:
-        repositories.fail_document(session, document_id, str(exc))
-        logger.warning("Indexing failed for document %s: %s", document_id, exc)
-        raise HTTPException(
-            status_code=503,
-            detail={"document_id": document_id, "message": str(exc)},
-        ) from exc
-    except Exception as exc:  # unexpected embedding/indexing failure
-        repositories.fail_document(session, document_id, f"Unexpected error: {exc}")
-        logger.exception("Unexpected indexing failure for %s", document_id)
-        raise HTTPException(
-            status_code=500, detail="Document indexing failed unexpectedly."
-        ) from exc
-
-    repositories.complete_document(
-        session,
+    background_tasks.add_task(
+        ingest_document,
         document_id,
-        len(chunks),
-        embedding_model=embedder.model,
-        chunk_size_tokens=settings.chunk_size_tokens,
-        chunk_overlap_tokens=settings.chunk_overlap_tokens,
+        embedder=embedder,
+        store=store,
+        storage=storage,
     )
     record = repositories.get_document(session, document_id)
-
     logger.info(
-        "Ingested and indexed document %s (%s, %d bytes, %d chunks)",
+        "Queued document %s (%r, %d bytes) for background ingestion",
         document_id,
         filename,
         len(data),
-        len(chunks),
     )
-    return UploadDocumentResponse(**record.model_dump(), chunks=chunks)
+    return UploadDocumentResponse(**record.model_dump(), chunks=[])
 
 
 @router.get("", response_model=list[DocumentRecord])

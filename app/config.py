@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it
 
+    # Logging: rotating file in addition to stderr. Set LOG_FILE= (empty) to
+    # disable file logging entirely.
+    log_file: str = "data/logs/oraculum.log"
+
     # Frontend (dev server origins; production build is same-origin)
     cors_origins: list[str] = [
         "http://localhost:5173",
@@ -75,6 +79,11 @@ class Settings(BaseSettings):
     def chroma_path(self) -> Path:
         """Absolute ChromaDB persistence directory anchored to the project root."""
         return self._project_path(self.chroma_dir)
+
+    @property
+    def log_file_path(self) -> Path:
+        """Absolute log-file path anchored to the project root."""
+        return self._project_path(self.log_file)
 
     @staticmethod
     def _project_path(value: str) -> Path:

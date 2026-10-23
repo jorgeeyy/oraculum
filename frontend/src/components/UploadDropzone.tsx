@@ -33,7 +33,7 @@ export default function UploadDropzone({ onFile, busy }: Props) {
       {busy ? (
         <span className="flex items-center gap-2 text-sm text-muted">
           <Loader2 size={16} className="animate-spin text-accent" />
-          Uploading and indexing…
+          Uploading…
         </span>
       ) : (
         <>

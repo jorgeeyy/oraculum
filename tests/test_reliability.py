@@ -223,7 +223,7 @@ class TestDuplicateUpload:
             "/documents",
             files={"file": ("contractor_policy.md", payload, "text/markdown")},
         )
-        assert first.status_code == 201, first.text
+        assert first.status_code == 202, first.text
         first_id = first.json()["id"]
 
         second = client.post(
@@ -251,8 +251,8 @@ class TestDuplicateUpload:
             "/documents",
             files={"file": ("b.md", b"# B\n\nbravo", "text/markdown")},
         )
-        assert first.status_code == 201
-        assert second.status_code == 201
+        assert first.status_code == 202
+        assert second.status_code == 202
         assert first.json()["id"] != second.json()["id"]
 
 
