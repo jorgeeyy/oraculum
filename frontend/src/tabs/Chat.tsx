@@ -56,16 +56,17 @@ export default function Chat({
   const [needsKey, setNeedsKey] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const didInitRef = useRef(false);
 
-  // Load history once per mounted thread. The ref guard means the id that
-  // arrives after the first message (conversation_id: null -> created id)
-  // does not trigger a reload — the local thread already has every message.
+  // Load history whenever this thread is opened. Keyed on the id only (no
+  // ref guard): React StrictMode runs effects twice, and a "skip if already
+  // started" ref would cancel the first run and never start a second one,
+  // leaving the thread stuck loading. The id that arrives after the first
+  // message (null -> created id) simply refetches the just-saved exchange.
   useEffect(() => {
-    if (didInitRef.current) return;
-    didInitRef.current = true;
     if (!conversationId) return;
     let cancelled = false;
+    setLoadingThread(true);
+    setError(null);
     (async () => {
       try {
         const detail = await api.getConversation(conversationId);
