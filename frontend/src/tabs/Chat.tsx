@@ -214,26 +214,6 @@ export default function Chat({
               ) : (
                 <div key={i} className="text-[15px] leading-7">
                   <p className="whitespace-pre-wrap">{m.text}</p>
-                  {m.response && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                          m.response.status === "answered"
-                            ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
-                            : "bg-amber-500/12 text-amber-600 dark:text-amber-400"
-                        }`}
-                      >
-                        {m.response.status === "answered"
-                          ? "grounded answer"
-                          : "insufficient evidence"}
-                      </span>
-                      <span className="text-xs text-faint">
-                        {m.response.model} · retrieval{" "}
-                        {Math.round(m.response.retrieval_ms)}ms · generation{" "}
-                        {Math.round(m.response.generation_ms)}ms
-                      </span>
-                    </div>
-                  )}
                   {m.response && m.response.sources.length > 0 && (
                     <div className="mt-4">
                       <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-faint">
@@ -304,8 +284,7 @@ export default function Chat({
           </div>
 
           <p className="mt-2 text-center text-[11px] text-faint">
-            Enter to send · Shift+Enter for a new line · grounded in retrieved
-            evidence only
+            Enter to send · Shift+Enter for a new line
           </p>
         </div>
       </div>
