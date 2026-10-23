@@ -4,12 +4,16 @@ import type { Source } from "../api/types";
 interface Props {
   source: Source;
   index?: number;
+  onOpen?: () => void;
 }
 
-export default function SourceCard({ source, index }: Props) {
+export default function SourceCard({ source, index, onOpen }: Props) {
   return (
     <details className="group overflow-hidden rounded-xl border border-line bg-surface transition-colors hover:border-accent/40">
-      <summary className="flex cursor-pointer list-none items-center gap-2.5 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+      <summary
+        onClick={onOpen}
+        className="flex cursor-pointer list-none items-center gap-2.5 px-3 py-2.5 [&::-webkit-details-marker]:hidden"
+      >
         <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-accent/12 px-1 text-[11px] font-semibold text-accent">
           {index ?? "·"}
         </span>

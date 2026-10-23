@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Loader2 } from "lucide-react";
 import { ApiError, api } from "../api/client";
-import type { ChatResponse, MessageRecord } from "../api/types";
+import type { ChatResponse, MessageRecord, Source } from "../api/types";
+import EvidencePanel from "../components/EvidencePanel";
 import SourceCard from "../components/SourceCard";
 
 interface ChatProps {
@@ -54,6 +55,7 @@ export default function Chat({
   const [loadingThread, setLoadingThread] = useState(conversationId !== null);
   const [error, setError] = useState<string | null>(null);
   const [needsKey, setNeedsKey] = useState(false);
+  const [evidence, setEvidence] = useState<Source | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -71,7 +73,13 @@ export default function Chat({
       try {
         const detail = await api.getConversation(conversationId);
         if (cancelled) return;
-        setMessages(detail.messages.map((m) => toMessage(m, conversationId)));
+        const loaded = detail.messages.map((m) => toMessage(m, conversationId));
+        setMessages(loaded);
+        // Show the evidence for the latest grounded answer, like a fresh one.
+        const last = loaded[loaded.length - 1];
+        if (last?.response && last.response.sources.length > 0) {
+          setEvidence(last.response.sources[0]);
+        }
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -117,6 +125,8 @@ export default function Chat({
         conversation_id: conversationId ?? null,
       });
       setMessages((prev) => [...prev, { role: "assistant", text: response.answer, response }]);
+      // Grounded answer -> open its top citation beside the chat.
+      setEvidence(response.sources.length > 0 ? response.sources[0] : null);
       if (!conversationId && response.conversation_id) {
         onConversationCreated(response.conversation_id);
       }
@@ -138,8 +148,9 @@ export default function Chat({
   }
 
   return (
-    <div className="flex h-full flex-col">
-      {error && (
+    <div className="flex h-full">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {error && (
         <div className="mx-auto mt-3 flex w-full max-w-3xl items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-600 dark:text-red-400">
           <span className="flex-1">{error}</span>
           {needsKey && (
@@ -230,7 +241,12 @@ export default function Chat({
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
                         {m.response.sources.map((s, idx) => (
-                          <SourceCard key={s.source_id} source={s} index={idx + 1} />
+                          <SourceCard
+                            key={s.source_id}
+                            source={s}
+                            index={idx + 1}
+                            onOpen={() => setEvidence(s)}
+                          />
                         ))}
                       </div>
                     </div>
@@ -292,6 +308,16 @@ export default function Chat({
           </p>
         </div>
       </div>
+      </div>
+
+      {/* Evidence beside the chat, like the cited document in a viewer */}
+      {evidence && (
+        <EvidencePanel
+          key={evidence.source_id}
+          source={evidence}
+          onClose={() => setEvidence(null)}
+        />
+      )}
     </div>
   );
 }
