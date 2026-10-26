@@ -12,6 +12,7 @@ os.environ["LOG_FILE"] = ""
 
 from app.api.chat import get_generator
 from app.api.documents import get_embedder, get_storage, get_vector_store
+from app.api.retrieve import get_bm25_index
 from app.config import Settings, get_settings
 from app.db.session import normalize_database_url
 from app.main import create_app
@@ -71,6 +72,43 @@ class RecordingVectorStore:
         return self.vector_count
 
 
+class RecordingBm25:
+    """Stands in for the FTS5 index; records index/delete/search calls."""
+
+    def __init__(self) -> None:
+        self.indexed: list[Chunk] = []
+        self.deletes: list[str] = []
+        self.searches: list[dict] = []
+        self.search_result: list[dict] = []
+        self.fail_index: Exception | None = None
+        self.fail_search: Exception | None = None
+        self.fail_delete: Exception | None = None
+
+    def index_chunks(self, chunks) -> None:
+        if self.fail_index is not None:
+            raise self.fail_index
+        self.indexed.extend(list(chunks))
+
+    def search(self, query: str, *, top_k: int = 5, document_id: str | None = None):
+        if self.fail_search is not None:
+            raise self.fail_search
+        self.searches.append(
+            {"query": query, "top_k": top_k, "document_id": document_id}
+        )
+        return list(self.search_result)
+
+    def delete_document(self, document_id: str) -> None:
+        if self.fail_delete is not None:
+            raise self.fail_delete
+        self.deletes.append(document_id)
+
+    def count(self) -> int:
+        return len(self.indexed)
+
+    def clear(self) -> None:
+        self.indexed.clear()
+
+
 class RecordingGenerator:
     """Stands in for the OpenAI chat generator; records calls, canned results."""
 
@@ -117,11 +155,25 @@ def fake_generator() -> RecordingGenerator:
 
 
 @pytest.fixture()
+def fake_bm25() -> RecordingBm25:
+    return RecordingBm25()
+
+
+@pytest.fixture(autouse=True)
+def _patch_ingestion_bm25(fake_bm25: RecordingBm25, monkeypatch) -> None:
+    """Ingestion resolves the index itself (outside the DI graph); pin it too."""
+    import app.services.ingestion as ingestion_module
+
+    monkeypatch.setattr(ingestion_module, "get_bm25_index", lambda: fake_bm25)
+
+
+@pytest.fixture()
 def client(
     tmp_path,
     fake_embedder: RecordingEmbedder,
     fake_vector_store: RecordingVectorStore,
     fake_generator: RecordingGenerator,
+    fake_bm25: RecordingBm25,
 ) -> Iterator[TestClient]:
     app = create_app()
     storage = DocumentStorage(tmp_path / "uploads")
@@ -129,6 +181,7 @@ def client(
     app.dependency_overrides[get_embedder] = lambda: fake_embedder
     app.dependency_overrides[get_vector_store] = lambda: fake_vector_store
     app.dependency_overrides[get_generator] = lambda: fake_generator
+    app.dependency_overrides[get_bm25_index] = lambda: fake_bm25
     app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
     with TestClient(app) as test_client:
         test_client.storage = storage  # type: ignore[attr-defined]
@@ -141,6 +194,7 @@ def client_with_settings(
     fake_embedder: RecordingEmbedder,
     fake_vector_store: RecordingVectorStore,
     fake_generator: RecordingGenerator,
+    fake_bm25: RecordingBm25,
 ):
     """Factory: TestClient app with fake deps AND overridden Settings values."""
 
@@ -151,6 +205,7 @@ def client_with_settings(
         app.dependency_overrides[get_embedder] = lambda: fake_embedder
         app.dependency_overrides[get_vector_store] = lambda: fake_vector_store
         app.dependency_overrides[get_generator] = lambda: fake_generator
+        app.dependency_overrides[get_bm25_index] = lambda: fake_bm25
         app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
         merged = get_settings().model_dump() | settings_overrides
         app.dependency_overrides[get_settings] = lambda: Settings(**merged)

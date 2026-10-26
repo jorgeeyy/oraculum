@@ -108,6 +108,29 @@ class VectorStore:
                 f"Could not count vectors: {type(exc).__name__}."
             ) from exc
 
+    def all_chunks(self) -> list[dict[str, Any]]:
+        """Every stored chunk as {id, text, metadata}; used by the BM25 backfill.
+
+        Reads stored texts only - no embeddings are returned or recomputed.
+        """
+        try:
+            result = self._collection.get(include=["documents", "metadatas"])
+        except Exception as exc:
+            raise VectorStoreError(
+                f"Could not list stored chunks: {type(exc).__name__}."
+            ) from exc
+        ids = result.get("ids") or []
+        texts = result.get("documents") or []
+        metadatas = result.get("metadatas") or []
+        return [
+            {
+                "id": vector_id,
+                "text": text or "",
+                "metadata": metadata or {},
+            }
+            for vector_id, text, metadata in zip(ids, texts, metadatas, strict=False)
+        ]
+
     def query(
         self,
         vector: Sequence[float],

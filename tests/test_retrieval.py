@@ -135,13 +135,15 @@ class TestRetrieveEndpoint:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["question"] == "How many days of annual leave?"
-        assert body["top_k"] == 5
+        assert body["top_k"] == 8
         assert body["elapsed_ms"] >= 0
         assert len(body["results"]) == 1
         result = body["results"][0]
         assert result["document_id"] == DOC_ID
         assert result["filename"] == "handbook.md"
-        assert result["score"] == pytest.approx(0.71)
+        # Hybrid mode reports the fused RRF score (vector rank 1, no BM25
+        # match: 1/(60+1)), not raw cosine similarity.
+        assert result["score"] == pytest.approx(1 / 61)
 
     def test_filter_and_top_k_forwarded(
         self, client: TestClient, fake_vector_store
@@ -211,8 +213,8 @@ class TestTopKResolution:
     ) -> None:
         response = client.post("/retrieve", json={"question": "vpn"})
         assert response.status_code == 200
-        assert fake_vector_store.queries[0]["top_k"] == 5
-        assert response.json()["top_k"] == 5
+        assert fake_vector_store.queries[0]["top_k"] == 8
+        assert response.json()["top_k"] == 8
 
     def test_config_value_changes_server_default(
         self, client_with_settings, fake_vector_store

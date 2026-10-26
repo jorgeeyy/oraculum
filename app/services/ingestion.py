@@ -17,6 +17,7 @@ from app.config import Settings, get_settings
 from app.db import repositories
 from app.db.models import Document
 from app.db.session import get_engine
+from app.services.bm25_index import Bm25Index, get_bm25_index
 from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
 from app.services.errors import (
@@ -63,16 +64,22 @@ def ingest_document(
     embedder: Embedder,
     store: VectorStore,
     storage: DocumentStorage,
+    bm25: Bm25Index | None = None,
 ) -> None:
     """Run the full pipeline for one document. Never raises.
 
     Every failure is stamped on the document row (`failed` + error_message)
     so the UI can surface it; a document deleted mid-flight is skipped and
-    its vectors cleaned up.
+    its vectors cleaned up. A failed search-index write fails the document
+    and rolls back its vectors - a `failed` row never stays retrievable.
     """
+    if bm25 is None:
+        bm25 = get_bm25_index()
     try:
         with _INGEST_LOCK:
-            _ingest(document_id, embedder=embedder, store=store, storage=storage)
+            _ingest(
+                document_id, embedder=embedder, store=store, storage=storage, bm25=bm25
+            )
     except Exception:
         # Session could not even be opened (DB down): the row stays pending
         # and startup recovery retries it on the next boot.
@@ -97,11 +104,24 @@ def _document_exists(session: Session, document_id: str) -> bool:
     )
 
 
-def _cleanup_orphan_vectors(document_id: str, store: VectorStore) -> None:
+def _cleanup_orphan_index(
+    document_id: str, store: VectorStore, bm25: Bm25Index
+) -> None:
+    """Remove a deleted/failed document's rows from both indexes.
+
+    Vectors first (same order the delete endpoint uses), each side best
+    effort: cleanup must not mask the original outcome.
+    """
     try:
         store.delete_document_vectors(document_id)
     except VectorStoreError:
         logger.warning("Vector cleanup after mid-flight delete failed for %s", document_id)
+    try:
+        bm25.delete_document(document_id)
+    except Exception:
+        logger.warning(
+            "Search-index cleanup failed for %s", document_id, exc_info=True
+        )
 
 
 def _ingest(
@@ -110,6 +130,7 @@ def _ingest(
     embedder: Embedder,
     store: VectorStore,
     storage: DocumentStorage,
+    bm25: Bm25Index,
 ) -> None:
     session = _open_session()
     try:
@@ -155,7 +176,7 @@ def _ingest(
             # flight; don't resurrect it with fresh vectors.
             if not _document_exists(session, document_id):
                 logger.info("Ingestion aborted for %s: deleted mid-flight", document_id)
-                _cleanup_orphan_vectors(document_id, store)
+                _cleanup_orphan_index(document_id, store, bm25)
                 return
             store.upsert_chunks(chunks, vectors)
         except (EmbeddingNotConfiguredError, EmbeddingServiceError, VectorStoreError) as exc:
@@ -169,7 +190,41 @@ def _ingest(
 
         if not _document_exists(session, document_id):
             logger.info("Ingestion aborted for %s: deleted during upsert", document_id)
-            _cleanup_orphan_vectors(document_id, store)
+            _cleanup_orphan_index(document_id, store, bm25)
+            return
+
+        # Term index: any failure here fails the document outright (policy:
+        # no partial state) and rolls back the vectors written above, so a
+        # `failed` row is never retrievable through either search path.
+        try:
+            bm25.index_chunks(chunks)
+        except Exception as exc:
+            repositories.fail_document(
+                session, document_id, f"Search index write failed: {exc}"
+            )
+            logger.error(
+                "Search-index write failed for %s; rolling back vectors: %s",
+                document_id,
+                exc,
+            )
+            try:
+                store.delete_document_vectors(document_id)
+            except VectorStoreError:
+                logger.warning(
+                    "Vector rollback after index failure also failed for %s",
+                    document_id,
+                )
+            try:
+                bm25.delete_document(document_id)
+            except Exception:
+                logger.warning(
+                    "Index cleanup after failure failed for %s", document_id, exc_info=True
+                )
+            return
+
+        if not _document_exists(session, document_id):
+            logger.info("Ingestion aborted for %s: deleted during index write", document_id)
+            _cleanup_orphan_index(document_id, store, bm25)
             return
 
         settings = get_settings()

@@ -24,6 +24,18 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 _ACCESS_LOGGER = logging.getLogger("app.access")
 
 _EXCLUDED_PATHS = {"/health", "/health/ready", "/docs", "/openapi.json", "/redoc"}
+# External API probes (e.g. the OpenCode CLI checking for an OpenAI-compatible
+# server on /v1/models). This app serves no /v1 routes, so these requests are
+# always external noise and never ours.
+_EXCLUDED_PREFIXES = ("/v1/",)
+
+
+def _is_excluded(path: str) -> bool:
+    return (
+        path in _EXCLUDED_PATHS
+        or path == "/v1"
+        or path.startswith(_EXCLUDED_PREFIXES)
+    )
 
 
 class RequestIdFilter(logging.Filter):
@@ -94,7 +106,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
-            if request.url.path not in _EXCLUDED_PATHS:
+            if not _is_excluded(request.url.path):
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 _ACCESS_LOGGER.info(
                     "%s %s -> %d in %.0fms",

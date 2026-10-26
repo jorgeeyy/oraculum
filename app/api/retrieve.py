@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.documents import get_embedder
 from app.config import Settings, get_settings
 from app.schemas.retrieval import RetrievalRequest, RetrievalResponse
+from app.services.bm25_index import Bm25Index, get_bm25_index
 from app.services.embeddings import Embedder
 from app.services.errors import (
     EmbeddingNotConfiguredError,
@@ -30,12 +31,14 @@ def retrieve(
     request: RetrievalRequest,
     embedder: Embedder = Depends(get_embedder),
     store: VectorStore = Depends(get_vector_store),
+    bm25: Bm25Index = Depends(get_bm25_index),
     settings: Settings = Depends(get_settings),
 ) -> RetrievalResponse:
-    """Search the vector index for chunks similar to the question.
+    """Search the index for chunks relevant to the question.
 
-    Runs entirely against the embedding model and vector store - no LLM,
-    no Postgres - so retrieval can be tested and debugged in isolation.
+    Hybrid by default: vector similarity and BM25 term matching fused with
+    Reciprocal Rank Fusion. No LLM and no Postgres - retrieval can be tested
+    and debugged in isolation.
     """
     top_k = resolve_top_k(request.top_k, settings)
     try:
@@ -45,6 +48,9 @@ def retrieve(
             store=store,
             top_k=top_k,
             document_id=request.document_id,
+            bm25=bm25,
+            hybrid=settings.retrieval_hybrid,
+            rrf_k=settings.retrieval_rrf_k,
         )
     except EmptyQuestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

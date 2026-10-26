@@ -47,7 +47,14 @@ class Settings(BaseSettings):
     # Server-wide default for /retrieve and /chat; a request may override
     # per call via its optional top_k field. Bounded so a bad deploy value
     # fails at startup instead of at request time.
-    retrieval_top_k: int = Field(default=5, ge=1, le=20)
+    # 8: with 5 the answer to a term-specific question could sit at rank 6
+    # outside the cutoff (observed on the Acme policy corpus).
+    retrieval_top_k: int = Field(default=8, ge=1, le=20)
+    # Hybrid term+vector search: BM25 (SQLite FTS5) ranks are fused with the
+    # vector ranks via Reciprocal Rank Fusion. False = legacy pure-vector path.
+    retrieval_hybrid: bool = True
+    retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
+    bm25_db_path: str = "data/bm25.db"
 
     # Answer generation (Phase 4)
     chat_model: str = "gpt-4o-mini"
@@ -79,6 +86,11 @@ class Settings(BaseSettings):
     def chroma_path(self) -> Path:
         """Absolute ChromaDB persistence directory anchored to the project root."""
         return self._project_path(self.chroma_dir)
+
+    @property
+    def bm25_path(self) -> Path:
+        """Absolute SQLite FTS5 (BM25) index file anchored to the project root."""
+        return self._project_path(self.bm25_db_path)
 
     @property
     def log_file_path(self) -> Path:

@@ -104,7 +104,7 @@ class TestChatEndpoint:
         self, client: TestClient, fake_vector_store
     ) -> None:
         client.post("/chat", json={"question": "vpn"})
-        assert fake_vector_store.queries[0]["top_k"] == 5
+        assert fake_vector_store.queries[0]["top_k"] == 8
 
     def test_config_value_changes_chat_default(
         self, client_with_settings, fake_vector_store

@@ -49,7 +49,10 @@ Copy-Item .env.example .env
 | `EMBEDDING_BATCH_SIZE` | Texts per embedding API call (default `100`) |
 | `EMBEDDING_TIMEOUT_SECONDS` | Embedding API timeout (default `30`) |
 | `CHROMA_DIR` | ChromaDB persistence directory (default `data/chroma`) |
-| `RETRIEVAL_TOP_K` | Server default for `/retrieve` + `/chat` (default `5`; per-request `top_k` overrides) |
+| `RETRIEVAL_TOP_K` | Server default for `/retrieve` + `/chat` (default `8`; per-request `top_k` overrides) |
+| `RETRIEVAL_HYBRID` | Fuse BM25 term search with vector search (default `true`; `false` = legacy vector-only) |
+| `RETRIEVAL_RRF_K` | Reciprocal Rank Fusion constant (default `60`) |
+| `BM25_DB_PATH` | SQLite FTS5 term-index file (default `data/bm25.db`) |
 | `CHAT_MODEL` | OpenAI chat model for answers (default `gpt-4o-mini`) |
 | `CHAT_MAX_TOKENS` | Max tokens per generated answer (default `500`) |
 | `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |
@@ -170,9 +173,38 @@ curl http://127.0.0.1:8000/conversations
 uv run python scripts/verify_index.py "How many days of annual leave?"
 ```
 
+### Hybrid retrieval (BM25 + vector)
+
+Retrieval runs two rankings and fuses them with Reciprocal Rank Fusion:
+
+- **Vector search** — cosine similarity over OpenAI embeddings (ChromaDB).
+- **BM25 term search** — SQLite FTS5 with porter stemming, in `data/bm25.db`.
+  No new dependencies; the row ids mirror Chroma's `{document_id}#{chunk_index}`
+  so both rankings fuse on the same keys.
+
+Each side ranks its top-k; every chunk votes `1 / (rrf_k + rank)` and chunks
+found by both sides win. This fixes a flat-cosine failure mode where a question
+literally containing a distinctive term ("principles") missed the chunk holding
+it because the scores around the cutoff differed by ~0.001. **Scores are fused
+rank support, not similarity** — they are for ordering, never confidence.
+
+Consistency policy: a term-index write failure during ingestion **fails the
+document and rolls back its vectors** (a `failed` document is never retrievable
+through either path); a term-index *query* failure only degrades the request to
+vector-only search (logged as a warning). Deleting a document removes its FTS
+rows first, then its vectors — every step is idempotent, so retries are safe.
+
+Upgrading an existing index (one-time; your documents are untouched):
+
+```powershell
+uv run python scripts/backfill_bm25.py   # rebuilds data/bm25.db from stored texts
+```
+
+Set `RETRIEVAL_HYBRID=false` to restore the exact legacy vector-only path.
+
 ### How grounding works
 
-1. The question is embedded and the top-k chunks are retrieved (same pipeline as `/retrieve`).
+1. The question is retrieved through the hybrid pipeline above (same as `/retrieve`).
 2. No evidence at all -> a deterministic refusal; the LLM is never called.
 3. Evidence is passed to the chat model as clearly-labelled untrusted data; the trusted
    system prompt forbids following instructions found inside documents and requires
@@ -258,13 +290,16 @@ distractor, and no-answer categories) is scored with Recall@3, Recall@5, MRR, an
 retrieval latency:
 
 ```powershell
-uv run python scripts/evaluate_retrieval.py
+uv run python scripts/evaluate_retrieval.py                 # hybrid (default)
+uv run python scripts/evaluate_retrieval.py --no-hybrid     # vector-only comparison
 ```
 
 The script ingests the sample documents into a dedicated `documents_eval` ChromaDB
-collection (the live index and PostgreSQL are never touched), runs every question,
-prints a per-question report, and writes `evals/results/baseline.json` as the
-measurement baseline. Query embeddings cost a fraction of a cent per run.
+collection and a dedicated `data/bm25_eval.db` term index (the live indexes and
+PostgreSQL are never touched), runs every question, prints a per-question report,
+and writes `evals/results/baseline.json` as the measurement baseline
+(`--save` to write elsewhere, e.g. `evals/results/hybrid.json`). Query embeddings
+cost a fraction of a cent per run.
 
 ## Test
 
@@ -305,7 +340,8 @@ oraculum/
 │       ├── ingestion.py          # Background pipeline: extract→chunk→embed→index + startup recovery
 │       ├── openai_client.py      # Shared cached OpenAI HTTP client
 │       ├── vector_store.py       # Persistent ChromaDB collection (upsert/query/delete)
-│       ├── retrieval.py          # retrieve_documents + recall/MRR metric functions
+│       ├── bm25_index.py          # SQLite FTS5 term index (BM25) + failure policy
+│       ├── retrieval.py           # Hybrid retrieve_documents + RRF + recall/MRR metrics
 │       ├── generation.py         # Grounded answer generation + citation resolution
 │       ├── rate_limit.py         # In-memory per-IP rate limiting
 │       ├── storage.py            # Safe UUID-based file storage under data/uploads
@@ -319,7 +355,8 @@ oraculum/
 │   ├── dataset.jsonl             # Labelled retrieval questions (5 categories)
 │   └── results/                  # Evaluation output (baseline.json)
 ├── scripts/
-│   ├── verify_index.py           # Semantic retrieval smoke test against the index
+│   ├── verify_index.py           # Hybrid retrieval smoke test against the index
+│   ├── backfill_bm25.py          # One-time: rebuild the FTS term index from stored texts
 │   └── evaluate_retrieval.py     # Recall@k / MRR / latency evaluation harness
 ├── tests/
 │   ├── conftest.py
@@ -328,7 +365,9 @@ oraculum/
 │   ├── test_chunking.py
 │   ├── test_embeddings.py
 │   ├── test_vector_store.py
+│   ├── test_bm25_index.py
 │   ├── test_retrieval.py
+│   ├── test_hybrid.py
 │   ├── test_generation.py
 │   ├── test_chat.py
 │   ├── test_reliability.py

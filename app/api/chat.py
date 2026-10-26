@@ -9,6 +9,7 @@ from app.api.retrieve import resolve_top_k
 from app.config import Settings, get_settings
 from app.db import repositories
 from app.schemas.chat import ChatRequest, ChatResponse, Source
+from app.services.bm25_index import Bm25Index, get_bm25_index
 from app.services.embeddings import Embedder
 from app.services.errors import (
     EmbeddingNotConfiguredError,
@@ -111,6 +112,7 @@ def chat(
     request: ChatRequest,
     embedder: Embedder = Depends(get_embedder),
     store: VectorStore = Depends(get_vector_store),
+    bm25: Bm25Index = Depends(get_bm25_index),
     generator: Generator = Depends(get_generator),
     settings: Settings = Depends(get_settings),
 ) -> ChatResponse:
@@ -130,6 +132,9 @@ def chat(
             store=store,
             top_k=top_k,
             document_id=request.document_id,
+            bm25=bm25,
+            hybrid=settings.retrieval_hybrid,
+            rrf_k=settings.retrieval_rrf_k,
         )
     except EmptyQuestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

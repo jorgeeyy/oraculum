@@ -41,6 +41,14 @@ def create_app() -> FastAPI:
         format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s",
     )
     configure_request_logging()
+    # uvicorn's built-in access logger emits a SECOND line per request
+    # ("INFO: 127.0.0.1:... \"GET ...\""), including for paths we deliberately
+    # exclude from logging (/health probes, external /v1/* probes) - which is
+    # how /v1/models kept showing up. Our app.access lines already cover
+    # every request, so mute uvicorn's duplicate at INFO (errors still pass).
+    # Safe here: uvicorn's Config.configure_logging() runs before the app is
+    # imported, so this level is never overwritten afterwards.
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     settings = get_settings()
     if settings.log_file:
         configure_file_logging(settings.log_file_path)
@@ -72,33 +80,39 @@ def create_app() -> FastAPI:
     if (_FRONTEND_DIST / "index.html").is_file():
         app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
 
-    
-    @app.middleware("http")
-    async def log_probe_source(request: Request, call_next):
-        if request.url.path == "/v1/models":
-            client_ip = (
-                request.client.host
-                if request.client
-                else "unknown"
-            )
-            user_agent = request.headers.get(
-                "user-agent", "unknown"
-            )
-            forwarded_for = request.headers.get(
-                "x-forwarded-for"
-            )
-
-            logging.getLogger("app.probe").warning(
-                "Probe source: client_ip=%s forwarded_for=%s "
-                "method=%s path=%s user_agent=%r",
-                client_ip,
-                forwarded_for,
-                request.method,
-                request.url.path,
-                user_agent,
-            )
-
-        return await call_next(request)
+    # Diagnostic middleware for who's probing /v1/models (answer: the
+    # OpenCode CLI, user_agent='opencode/latest/2.1.4/cli'). The probes are
+    # external and expected; logging them forever was pure noise. The 404
+    # they trigger is excluded from access logging too (see observability).
+    # Re-enable by uncommenting the block below (the `Request` import above
+    # is kept solely so this works as-is).
+    #
+    # @app.middleware("http")
+    # async def log_probe_source(request: Request, call_next):
+    #     if request.url.path == "/v1/models":
+    #         client_ip = (
+    #             request.client.host
+    #             if request.client
+    #             else "unknown"
+    #         )
+    #         user_agent = request.headers.get(
+    #             "user-agent", "unknown"
+    #         )
+    #         forwarded_for = request.headers.get(
+    #             "x-forwarded-for"
+    #         )
+    #
+    #         logging.getLogger("app.probe").warning(
+    #             "Probe source: client_ip=%s forwarded_for=%s "
+    #             "method=%s path=%s user_agent=%r",
+    #             client_ip,
+    #             forwarded_for,
+    #             request.method,
+    #             request.url.path,
+    #             user_agent,
+    #         )
+    #
+    #     return await call_next(request)
 
     return app
 

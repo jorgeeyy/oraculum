@@ -24,6 +24,7 @@ from app.schemas.documents import (
     DocumentRecord,
     UploadDocumentResponse,
 )
+from app.services.bm25_index import Bm25Error, Bm25Index, get_bm25_index
 from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
 from app.services.errors import (
@@ -326,6 +327,7 @@ def delete_document(
     document_id: str,
     storage: DocumentStorage = Depends(get_storage),
     store: VectorStore = Depends(get_vector_store),
+    bm25: Bm25Index = Depends(get_bm25_index),
     session: Session = Depends(get_db_session),
 ) -> DeleteResponse:
     document_id = _parse_document_id(document_id)
@@ -333,8 +335,23 @@ def delete_document(
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    # Vectors first: if this fails nothing is removed, so the record stays
-    # consistent and the deletion can simply be retried.
+    # Search index first: deleting rows that may not exist is a no-op, so a
+    # retry after any later failure stays safe.
+    try:
+        bm25.delete_document(document_id)
+    except Bm25Error as exc:
+        logger.exception("Search-index cleanup failed for %s", document_id)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Could not remove the document from the term index. "
+                "Nothing was deleted; try again."
+            ),
+        ) from exc
+
+    # Then vectors: if this fails the record and file survive, so the
+    # deletion can simply be retried (the term-index rows are already gone
+    # and re-deleting them is harmless).
     try:
         store.delete_document_vectors(document_id)
     except VectorStoreError as exc:
@@ -343,7 +360,7 @@ def delete_document(
             status_code=503,
             detail=(
                 "Could not remove the indexed vectors for this document. "
-                "Nothing was deleted; try again."
+                "The document record and file are still present; try again."
             ),
         ) from exc
 
