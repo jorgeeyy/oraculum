@@ -23,6 +23,9 @@ from app.services.ingestion import requeue_interrupted_ingestions
 
 _FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
+# Single source of truth for the API/eval-reported version.
+APP_VERSION = "0.8.0"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,7 +58,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         description="Retrieval-augmented generation knowledge assistant.",
-        version="0.8.0",
+        version=APP_VERSION,
         lifespan=lifespan,
     )
     app.add_middleware(RequestIdMiddleware)

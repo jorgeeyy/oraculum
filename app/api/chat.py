@@ -188,11 +188,16 @@ def chat(
         ) from exc
 
     logger.info(
-        "chat status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f question=%r",
+        "chat status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f "
+        "tokens_in=%d tokens_out=%d embed_retries=%d gen_retries=%d question=%r",
         outcome.status,
         len(outcome.sources),
         retrieval.elapsed_ms,
         outcome.elapsed_ms,
+        outcome.tokens_in,
+        outcome.tokens_out,
+        getattr(embedder, "retry_count", 0),
+        getattr(generator, "retry_count", 0),
         request.question[:60],
     )
     conversation_id = None

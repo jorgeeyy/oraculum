@@ -1,12 +1,41 @@
-{"question": "How many days of paid annual leave do full-time employees get?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}]}
-{"question": "How do I reset a forgotten password?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}]}
-{"question": "How long must a company password be and when does it expire?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}]}
-{"question": "How often must employees complete security awareness training?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}]}
-{"question": "What is the daily meal reimbursement limit for business travel?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}]}
-{"question": "What is the annual leave carry-over limit and when must security training be completed?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}]}
-{"question": "What is the sick leave self-certification period and the incident reporting timeframe?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}]}
-{"question": "What should I do if the VPN disconnects after a few minutes?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}]}
-{"question": "How do I regain access when locked out of the authenticator app?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}]}
+{"question": "How many days of paid annual leave do full-time employees get?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["20 days"]}
+{"question": "How do I reset a forgotten password?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["reset portal|reset.acme.example"], "notes": "procedural answer; exact phrasing varies"}
+{"question": "How long must a company password be and when does it expire?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["14 characters", "12 months"]}
+{"question": "How often must employees complete security awareness training?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["6 months"]}
+{"question": "What is the daily meal reimbursement limit for business travel?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["£35"]}
+{"question": "What is the annual leave carry-over limit and when must security training be completed?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}], "expected_facts": ["5 days", "6 months"]}
+{"question": "What is the sick leave self-certification period and the incident reporting timeframe?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}], "expected_facts": ["7 calendar days|7 days", "immediately|2 hours"]}
+{"question": "What should I do if the VPN disconnects after a few minutes?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["system clock|time sync|certificate"]}
+{"question": "How do I regain access when locked out of the authenticator app?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["4400|service desk"]}
 {"question": "How many days of parental leave are new fathers entitled to?", "type": "no_answer", "relevant": []}
 {"question": "What is the company policy on bringing pets to the office?", "type": "no_answer", "relevant": []}
 {"question": "What bonus scheme applies to engineering staff?", "type": "no_answer", "relevant": []}
+{"question": "How far in advance must leave be requested for absences of three days or more?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["two weeks|2 weeks"]}
+{"question": "Until when must carried-over leave days be used or do they expire?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["March"]}
+{"question": "By what time must employees notify their line manager of illness?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["9:30"]}
+{"question": "Within how many days must business expenses be submitted?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["30 days"]}
+{"question": "When are receipts required for an expense claim?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["£25"]}
+{"question": "How many days per week may employees work remotely?", "type": "factual", "relevant": [{"filename": "employee_handbook.md", "page": 1}], "expected_facts": ["three days|3 days"]}
+{"question": "What is the IT service desk extension number?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["4400"]}
+{"question": "What should I do first if a print job is stuck?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["queue|cancel"]}
+{"question": "Who handles toner replacements?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["office services"]}
+{"question": "What is the self-service password reset portal address?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["reset.acme.example"]}
+{"question": "What should I check first if the VPN fails to connect?", "type": "factual", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["expired", "multi-factor|multifactor|MFA"]}
+{"question": "What are the three data classification labels?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["Public", "Internal", "Confidential"], "notes": "term-specific query; exact label words"}
+{"question": "Which password manager is approved by IT?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["Acme Vault"]}
+{"question": "After how many minutes of inactivity does the screen lock?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["5 minutes"]}
+{"question": "How quickly must a lost or stolen device be reported?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["1 hour|one hour"]}
+{"question": "How quickly are security incidents triaged during business hours?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["2 hours|two hours"]}
+{"question": "What email address must suspected phishing be reported to?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["security@acme.example"]}
+{"question": "Is split tunnelling allowed on the VPN?", "type": "factual", "relevant": [{"filename": "security_policy.md", "page": 1}], "expected_facts": ["split tunnelling|disabled"], "notes": "yes/no question; correct answer is no"}
+{"question": "How do I get network access when the VPN says 'Access denied'?", "type": "multi_doc", "relevant": [{"filename": "it_support_guide.md", "page": 1}, {"filename": "security_policy.md", "page": 1}], "expected_facts": ["access request form"]}
+{"question": "What are the remote working rules and what does security require of devices?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "security_policy.md", "page": 1}], "expected_facts": ["three days|3 days", "encryption|company-managed|managed"]}
+{"question": "How do I request leave, and who do I contact if I am locked out of my account?", "type": "multi_doc", "relevant": [{"filename": "employee_handbook.md", "page": 1}, {"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["HR portal", "4400|service desk"]}
+{"question": "Can I use my personal laptop to connect to the VPN?", "type": "distractor", "relevant": [{"filename": "security_policy.md", "page": 1}], "notes": "yes/no question; correct answer is no - needs LLM judge for nuance"}
+{"question": "How do I order toner for the office printer?", "type": "distractor", "relevant": [{"filename": "it_support_guide.md", "page": 1}], "expected_facts": ["office services|do not order|don't order"], "notes": "false-premise question; guide says do not order it yourself"}
+{"question": "What is the company's policy on office parking spaces?", "type": "no_answer", "relevant": []}
+{"question": "How many days of sabbatical leave does the company offer?", "type": "no_answer", "relevant": []}
+{"question": "What is the expense limit for international flights?", "type": "no_answer", "relevant": [], "notes": "handbook covers meals and receipts only - near-miss distractor"}
+{"question": "How do I get a company credit card for travel expenses?", "type": "no_answer", "relevant": []}
+{"question": "What dress code applies to client visits?", "type": "no_answer", "relevant": []}
+{"question": "What is the notice period for resigning from the company?", "type": "no_answer", "relevant": []}

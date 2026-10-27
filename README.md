@@ -283,23 +283,58 @@ The API key (only needed when the server has `API_KEY` set) is stored in
 `localStorage` and sent as `X-API-Key`. The theme (dark by default, light
 toggle in the sidebar) is also persisted in `localStorage`.
 
-## Retrieval evaluation
+## Evaluation
 
-A labelled dataset (`evals/dataset.jsonl`, 12 questions across factual, multi-document,
-distractor, and no-answer categories) is scored with Recall@3, Recall@5, MRR, and
-retrieval latency:
+A labelled dataset (`evals/dataset.jsonl`, 41 questions across four types —
+factual, multi-document, distractor, and no-answer) drives two suites. One
+command runs both over a shared corpus ingest and writes a single results
+file with provenance (app version, git commit, dataset hash, run config):
 
 ```powershell
-uv run python scripts/evaluate_retrieval.py                 # hybrid (default)
-uv run python scripts/evaluate_retrieval.py --no-hybrid     # vector-only comparison
+uv run python scripts/evaluate.py                    # retrieval + chat suites
+uv run python scripts/evaluate.py --retrieval-only   # recall / MRR only
+uv run python scripts/evaluate.py --chat-only        # answer quality only
+uv run python scripts/evaluate.py --skip-ingest      # reuse the eval index
 ```
 
-The script ingests the sample documents into a dedicated `documents_eval` ChromaDB
-collection and a dedicated `data/bm25_eval.db` term index (the live indexes and
-PostgreSQL are never touched), runs every question, prints a per-question report,
-and writes `evals/results/baseline.json` as the measurement baseline
-(`--save` to write elsewhere, e.g. `evals/results/hybrid.json`). Query embeddings
-cost a fraction of a cent per run.
+The suite ingests the sample documents into a dedicated `documents_eval`
+ChromaDB collection and a dedicated `data/bm25_eval.db` term index (the live
+indexes and PostgreSQL are never touched). Results are written to
+`evals/results/latest.json` (`--save` to write elsewhere). A full run costs a
+few cents; retrieval-only runs cost a fraction of a cent.
+
+### Metric glossary
+
+| Metric | Meaning |
+|---|---|
+| `retrieval.answerable.recall@3` / `recall@5` | Fraction of answerable questions with a relevant document in the top-3 / top-5 results. |
+| `retrieval.answerable.mrr` | Mean reciprocal rank of the first relevant hit. |
+| `retrieval.no_answer.max_top1_score` | Highest retrieval score given to an unanswerable question — a hallucination-risk guard. Scores are rank support, not confidence. |
+| `chat.answerable.fact_score_mean` / `fact_all_rate` | Fraction of `expected_facts` present in the answer / fraction of questions with all facts present (case-insensitive substring; `\|`-separated phrasing alternates). |
+| `chat.no_answer.abstention_accuracy` | No-answer questions correctly refused instead of hallucinated (the safety number). |
+| `chat.answerable.citation_coverage` | Fraction of declared relevant documents actually cited by the answer. |
+| `chat.answerable.grounded_sentence_pct` | Structural groundedness proxy: answer sentences sharing content words with the retrieved evidence. |
+| `chat.errors.rate` | Questions that failed with an error (lower is better). |
+| `chat.latency_ms.*` / `retrieval.latency_ms.*` | Mean stage latencies in milliseconds. |
+| `chat.tokens.*` / `chat.cost_usd.*` | Usage totals; cost is estimated from an approximate static price table in the eval script — production code holds no prices. |
+| `chat.answerable.abstained` | Answerable questions the model declined to answer (over-caution counterweight). |
+
+Every results file carries `generated_at`, `app_version`, `git_commit`, and
+`dataset_sha256`, so any number can be traced to the code and dataset that
+produced it.
+
+### Comparing runs (regression gate)
+
+```powershell
+uv run python scripts/compare_eval.py evals/results/baseline.json evals/results/latest.json
+```
+
+Prints a per-metric `old → new` table with deltas, applies per-metric
+tolerances (ε on scores, ±25% relative on latency), and exits `1` if a gated
+metric regressed or is missing — `0` otherwise, so it drops into CI. Legacy
+flat result files (`baseline.json`, `hybrid.json`) stay comparable: dotted
+metric paths fall back to top-level keys automatically. The gate logic is
+covered by `tests/test_eval_regression.py` (no API key needed).
 
 ## Test
 
@@ -352,12 +387,15 @@ oraculum/
 ├── alembic.ini                   # Alembic config (no secrets)
 ├── samples/                      # Fictional sample documents for manual testing
 ├── evals/
-│   ├── dataset.jsonl             # Labelled retrieval questions (5 categories)
-│   └── results/                  # Evaluation output (baseline.json)
+│   ├── dataset.jsonl             # Labelled eval questions (41, 4 types, expected_facts)
+│   └── results/                  # Evaluation output (baseline.json, latest.json, ...)
 ├── scripts/
 │   ├── verify_index.py           # Hybrid retrieval smoke test against the index
 │   ├── backfill_bm25.py          # One-time: rebuild the FTS term index from stored texts
-│   └── evaluate_retrieval.py     # Recall@k / MRR / latency evaluation harness
+│   ├── evaluate.py               # Single entry point: retrieval + chat suites, one results file
+│   ├── evaluate_retrieval.py     # Recall@k / MRR / latency suite (used by evaluate.py)
+│   ├── evaluate_chat.py          # Answer quality / abstention / cost suite (used by evaluate.py)
+│   └── compare_eval.py           # Regression gate: compare two result files, exit 1 on drop
 ├── tests/
 │   ├── conftest.py
 │   ├── test_health.py
@@ -373,7 +411,9 @@ oraculum/
 │   ├── test_reliability.py
 │   ├── test_documents_api.py
 │   ├── test_ingestion.py
-│   └── test_conversations.py
+│   ├── test_conversations.py
+│   ├── test_eval_dataset.py
+│   └── test_eval_regression.py
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts            # Vite config + dev proxy + vitest config

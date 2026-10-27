@@ -82,6 +82,10 @@ class GenerationResult:
     sources: list[Source]
     model: str
     elapsed_ms: float
+    # Usage from the chat completion(s); 0 when nothing was generated
+    # (no-evidence refusal short-circuits before any API call).
+    tokens_in: int = 0
+    tokens_out: int = 0
 
 
 def build_messages(
@@ -129,6 +133,13 @@ def _excerpt(text: str) -> str:
     return f"{cut} ..."
 
 
+def _usage_int(response: Any, field: str) -> int:
+    """Read one usage counter defensively (fake test responses may omit it)."""
+    usage = getattr(response, "usage", None)
+    value = getattr(usage, field, None)
+    return value if isinstance(value, int) else 0
+
+
 class Generator:
     """Grounded answer generation with the OpenAI chat API.
 
@@ -163,10 +174,16 @@ class Generator:
         self._temperature = temperature
         self._max_retries = max(1, max_retries)
         self._sleep = sleep
+        self._retries = 0
 
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def retry_count(self) -> int:
+        """Transient retries since this generator was created (observability)."""
+        return self._retries
 
     def generate(
         self, question: str, evidence: Sequence[RetrievalResult]
@@ -182,7 +199,7 @@ class Generator:
 
         started = time.perf_counter()
         messages = build_messages(question, evidence)
-        content = self._complete(messages)
+        content, tokens_in, tokens_out = self._complete(messages)
         try:
             parsed = _parse_model_output(content)
         except GenerationServiceError:
@@ -192,7 +209,9 @@ class Generator:
                 {"role": "assistant", "content": content},
                 {"role": "user", "content": REPAIR_MESSAGE},
             ]
-            content = self._complete(messages)
+            content, extra_in, extra_out = self._complete(messages)
+            tokens_in += extra_in
+            tokens_out += extra_out
             try:
                 parsed = _parse_model_output(content)
             except GenerationServiceError as exc:
@@ -222,6 +241,8 @@ class Generator:
                 sources=[],
                 model=self._model,
                 elapsed_ms=elapsed_ms,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
             )
 
         sources = [
@@ -241,10 +262,16 @@ class Generator:
             sources=sources,
             model=self._model,
             elapsed_ms=elapsed_ms,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
         )
 
-    def _complete(self, messages: list[dict[str, str]]) -> str:
-        """Call the chat API with bounded retries on transient failures."""
+    def _complete(self, messages: list[dict[str, str]]) -> tuple[str, int, int]:
+        """Call the chat API with bounded retries on transient failures.
+
+        Returns (content, prompt_tokens, completion_tokens); token counts are
+        0 when the response carries no usage block (fake clients in tests).
+        """
         attempts = 0
         while True:
             try:
@@ -258,7 +285,11 @@ class Generator:
                 content = response.choices[0].message.content
                 if not content:
                     raise GenerationServiceError("model returned an empty response")
-                return content
+                return (
+                    content,
+                    _usage_int(response, "prompt_tokens"),
+                    _usage_int(response, "completion_tokens"),
+                )
             except _TRANSIENT_ERRORS as exc:
                 error: Exception = exc
             except APIStatusError as exc:
@@ -278,6 +309,7 @@ class Generator:
                     f"Chat request failed after {attempts} attempts: "
                     f"{type(error).__name__}."
                 ) from error
+            self._retries += 1
             delay = 2 ** (attempts - 1)
             logger.warning(
                 "Transient generation failure (attempt %d/%d): %s; retrying in %ss",
