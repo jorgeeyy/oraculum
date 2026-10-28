@@ -72,6 +72,33 @@ export interface ChatResponse {
   retrieval_ms: number;
   generation_ms: number;
   conversation_id: string | null;
+  // Assistant message row when the exchange was persisted (null for
+  // stateless requests) - the handle for per-answer feedback.
+  message_id?: string | null;
+}
+
+// Thumbs feedback on an assistant answer: null = not rated / cleared.
+export type FeedbackRating = "up" | "down" | null;
+
+export interface FeedbackResponse {
+  message_id: string;
+  feedback: FeedbackRating;
+}
+
+// /chat/stream SSE event payloads.
+export interface StreamMeta {
+  model: string;
+  retrieval_ms: number;
+  rewritten: boolean;
+  has_evidence: boolean;
+}
+
+export interface StreamDelta {
+  text: string;
+}
+
+export interface StreamError {
+  message: string;
 }
 
 export interface ReadyResponse {
@@ -100,6 +127,7 @@ export interface MessageRecord {
   role: string;
   content: string;
   status: string | null;
+  feedback: FeedbackRating;
   sources: Source[];
   model: string | null;
   retrieval_ms: number | null;

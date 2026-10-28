@@ -7,9 +7,13 @@ import type {
   ConversationSummary,
   DocumentContentResponse,
   DocumentRecord,
+  FeedbackRating,
+  FeedbackResponse,
   ReadyResponse,
   RetrievalRequest,
   RetrievalResponse,
+  StreamError,
+  StreamMeta,
   UploadDocumentResponse,
 } from "./types";
 
@@ -83,6 +87,24 @@ function extractDetail(body: unknown): {
   return { message: "Request failed." };
 }
 
+async function errorFromResponse(response: Response): Promise<ApiError> {
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    /* non-JSON error body */
+  }
+  const { message, documentId } = extractDetail(body);
+  const retryHeader = response.headers.get("Retry-After");
+  const retryAfter = retryHeader ? Number(retryHeader) : undefined;
+  return new ApiError(
+    response.status,
+    message,
+    Number.isFinite(retryAfter) ? retryAfter : undefined,
+    documentId,
+  );
+}
+
 export async function apiFetch<T>(
   path: string,
   init: RequestInit = {},
@@ -103,21 +125,7 @@ export async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    let body: unknown = null;
-    try {
-      body = await response.json();
-    } catch {
-      /* non-JSON error body */
-    }
-    const { message, documentId } = extractDetail(body);
-    const retryHeader = response.headers.get("Retry-After");
-    const retryAfter = retryHeader ? Number(retryHeader) : undefined;
-    throw new ApiError(
-      response.status,
-      message,
-      Number.isFinite(retryAfter) ? retryAfter : undefined,
-      documentId,
-    );
+    throw await errorFromResponse(response);
   }
   return (await response.json()) as T;
 }
@@ -126,8 +134,137 @@ function post<T>(path: string, body: unknown): Promise<T> {
   return apiFetch<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
 
+// ------------------------------------------------------------- SSE parsing
+
+export interface SseFrame {
+  event: string;
+  data: string;
+}
+
+function parseFrame(block: string): SseFrame | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event: ")) event = line.slice(7);
+    else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
+  }
+  // No data line -> comment or keep-alive; not a frame we care about.
+  if (dataLines.length === 0) return null;
+  return { event, data: dataLines.join("\n") };
+}
+
+/**
+ * Incremental Server-Sent Events decoder: feed it raw text chunks as they
+ * arrive, get back only the frames that are complete. A frame split across
+ * chunk boundaries stays buffered until its blank-line terminator shows up.
+ */
+export class SseParser {
+  private buffer = "";
+
+  push(chunk: string): SseFrame[] {
+    if (chunk) this.buffer += chunk;
+    const blocks = this.buffer.split("\n\n");
+    this.buffer = blocks.pop() ?? ""; // trailing block may be partial
+    const frames: SseFrame[] = [];
+    for (const block of blocks) {
+      const frame = parseFrame(block);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+}
+
+export interface ChatStreamHandlers {
+  /** Retrieval finished - answer text may follow. */
+  onMeta?: (meta: StreamMeta) => void;
+  /** Incremental answer text (cosmetic; `done` is authoritative). */
+  onDelta?: (text: string) => void;
+}
+
+/**
+ * POST /chat/stream and consume the SSE reply.
+ *
+ * Resolves with the authoritative `done` payload (validated citations) and
+ * rejects with ApiError on pre-stream HTTP failures, an `error` event, or a
+ * stream that ends without `done`. Deltas are best-effort UX: callers should
+ * render them live but always replace the text with the resolved answer.
+ */
+export async function chatStream(
+  req: ChatRequest,
+  handlers: ChatStreamHandlers = {},
+): Promise<ChatResponse> {
+  const headers = new Headers();
+  headers.set("X-Request-ID", newRequestId());
+  const key = getApiKey();
+  if (key) headers.set("X-API-Key", key);
+  headers.set("Content-Type", "application/json");
+  headers.set("Accept", "text/event-stream");
+
+  let response: Response;
+  try {
+    response = await fetch("/chat/stream", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(req),
+    });
+  } catch {
+    throw new ApiError(0, "Cannot reach the server. Is it running?");
+  }
+  if (!response.ok) throw await errorFromResponse(response);
+  if (!response.body) {
+    throw new ApiError(0, "This browser cannot stream responses.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SseParser();
+  let result: ChatResponse | null = null;
+  let failure: ApiError | null = null;
+
+  try {
+    while (!result && !failure) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+        try {
+          if (frame.event === "meta") {
+            handlers.onMeta?.(JSON.parse(frame.data) as StreamMeta);
+          } else if (frame.event === "delta") {
+            const payload = JSON.parse(frame.data) as { text: string };
+            handlers.onDelta?.(payload.text);
+          } else if (frame.event === "done") {
+            result = JSON.parse(frame.data) as ChatResponse;
+          } else if (frame.event === "error") {
+            const payload = JSON.parse(frame.data) as StreamError;
+            failure = new ApiError(503, payload.message);
+          }
+        } catch {
+          // Malformed frame: ignore it. The `done`/`error` contract still
+          // decides the outcome, so a stray frame can't fake success.
+        }
+        if (result || failure) break;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+
+  if (failure) throw failure;
+  if (!result) {
+    throw new ApiError(0, "The stream ended before an answer arrived.");
+  }
+  return result;
+}
+
 export const api = {
   chat: (req: ChatRequest) => post<ChatResponse>("/chat", req),
+  streamChat: (req: ChatRequest, handlers: ChatStreamHandlers = {}) =>
+    chatStream(req, handlers),
+  setFeedback: (messageId: string, rating: FeedbackRating) =>
+    apiFetch<FeedbackResponse>(`/chat/messages/${messageId}/feedback`, {
+      method: "PUT",
+      body: JSON.stringify({ rating }),
+    }),
   retrieve: (req: RetrievalRequest) => post<RetrievalResponse>("/retrieve", req),
   listConversations: () => apiFetch<ConversationSummary[]>("/conversations"),
   getConversation: (id: string) =>

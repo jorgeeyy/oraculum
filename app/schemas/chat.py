@@ -65,3 +65,16 @@ class ChatResponse(BaseModel):
     # Set whenever the request opted into persistence (conversation_id key
     # present); identifies the conversation the exchange was stored in.
     conversation_id: str | None = None
+    # Set alongside conversation_id: the assistant message row, so the client
+    # can attach 👍/👎 feedback to this exact answer.
+    message_id: str | None = None
+
+
+class FeedbackRequest(BaseModel):
+    # "up" = thumbs up, "down" = thumbs down, null = clear the feedback.
+    rating: Literal["up", "down"] | None = None
+
+
+class FeedbackResponse(BaseModel):
+    message_id: str
+    feedback: str | None = None

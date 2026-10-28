@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Loader2 } from "lucide-react";
+import { ArrowUp, Loader2, ThumbsDown, ThumbsUp } from "lucide-react";
 import { ApiError, api } from "../api/client";
-import type { ChatResponse, MessageRecord, Source } from "../api/types";
+import type {
+  ChatResponse,
+  FeedbackRating,
+  MessageRecord,
+  Source,
+} from "../api/types";
 import EvidencePanel from "../components/EvidencePanel";
 import SourceCard from "../components/SourceCard";
 
@@ -15,6 +20,9 @@ interface Message {
   role: "user" | "assistant";
   text: string;
   response?: ChatResponse;
+  // Assistant message row id + stored thumbs state (null until rated).
+  messageId?: string | null;
+  feedback?: FeedbackRating;
 }
 
 const SUGGESTIONS = [
@@ -28,6 +36,8 @@ function toMessage(record: MessageRecord, conversationId: string | null): Messag
   return {
     role: "assistant",
     text: record.content,
+    messageId: record.id,
+    feedback: record.feedback ?? null,
     response: {
       question: "",
       answer: record.content,
@@ -40,6 +50,7 @@ function toMessage(record: MessageRecord, conversationId: string | null): Messag
       retrieval_ms: record.retrieval_ms ?? 0,
       generation_ms: record.generation_ms ?? 0,
       conversation_id: conversationId,
+      message_id: record.id,
     },
   };
 }
@@ -114,17 +125,44 @@ export default function Chat({
   async function submit() {
     const question = input.trim();
     if (!question || busy) return;
-    setMessages((prev) => [...prev, { role: "user", text: question }]);
+    // Optimistic user bubble + a placeholder for the streamed answer, so
+    // deltas have a target and a failure can roll both back in one slice.
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: question },
+      { role: "assistant", text: "" },
+    ]);
     setInput("");
     setBusy(true);
     setError(null);
     setNeedsKey(false);
     try {
-      const response = await api.chat({
-        question,
-        conversation_id: conversationId ?? null,
-      });
-      setMessages((prev) => [...prev, { role: "assistant", text: response.answer, response }]);
+      const response = await api.streamChat(
+        { question, conversation_id: conversationId ?? null },
+        {
+          onDelta: (text) =>
+            setMessages((prev) => {
+              if (prev.length === 0) return prev;
+              const last = prev[prev.length - 1];
+              return [
+                ...prev.slice(0, -1),
+                { ...last, text: last.text + text },
+              ];
+            }),
+        },
+      );
+      // Deltas are cosmetic: replace the placeholder with the validated,
+      // citation-resolved answer the server actually stands behind.
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        {
+          role: "assistant",
+          text: response.answer,
+          response,
+          messageId: response.message_id ?? null,
+          feedback: null,
+        },
+      ]);
       // Grounded answer -> open its top citation beside the chat.
       setEvidence(response.sources.length > 0 ? response.sources[0] : null);
       if (!conversationId && response.conversation_id) {
@@ -139,11 +177,37 @@ export default function Chat({
           : "Unexpected error.";
       setError(message);
       if (err instanceof ApiError && err.status === 401) setNeedsKey(true);
-      // Roll back the optimistic user message and restore the input for editing.
-      setMessages((prev) => prev.slice(0, -1));
+      // Roll back the optimistic user message, the partial answer, and
+      // restore the input for editing.
+      setMessages((prev) => prev.slice(0, -2));
       setInput(question);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function toggleFeedback(index: number, next: "up" | "down") {
+    const message = messages[index];
+    const messageId = message?.messageId;
+    if (!messageId) return;
+    const current = message.feedback ?? null;
+    // Clicking the active thumb again clears the vote (toggle off).
+    const value: FeedbackRating = current === next ? null : next;
+    setMessages((prev) =>
+      prev.map((m, i) => (i === index ? { ...m, feedback: value } : m)),
+    );
+    try {
+      await api.setFeedback(messageId, value);
+    } catch (err) {
+      // Optimistic update was wrong: put the old value back.
+      setMessages((prev) =>
+        prev.map((m, i) => (i === index ? { ...m, feedback: current } : m)),
+      );
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Could not save your feedback.",
+      );
     }
   }
 
@@ -211,7 +275,7 @@ export default function Chat({
                     {m.text}
                   </div>
                 </div>
-              ) : (
+              ) : m.text === "" && !m.response ? null : (
                 <div key={i} className="text-[15px] leading-7">
                   <p className="whitespace-pre-wrap">{m.text}</p>
                   {m.response && m.response.sources.length > 0 && (
@@ -230,6 +294,39 @@ export default function Chat({
                           />
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {m.messageId && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className="text-[11px] text-faint">
+                        Was this helpful?
+                      </span>
+                      <button
+                        onClick={() => toggleFeedback(i, "up")}
+                        aria-label="Good answer"
+                        aria-pressed={m.feedback === "up"}
+                        title="Good answer"
+                        className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors ${
+                          m.feedback === "up"
+                            ? "border-accent/60 bg-accent/15 text-accent"
+                            : "border-line text-faint hover:border-accent/40 hover:text-ink"
+                        }`}
+                      >
+                        <ThumbsUp size={13} />
+                      </button>
+                      <button
+                        onClick={() => toggleFeedback(i, "down")}
+                        aria-label="Bad answer"
+                        aria-pressed={m.feedback === "down"}
+                        title="Bad answer"
+                        className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors ${
+                          m.feedback === "down"
+                            ? "border-red-500/60 bg-red-500/15 text-red-500"
+                            : "border-line text-faint hover:border-red-400/50 hover:text-ink"
+                        }`}
+                      >
+                        <ThumbsDown size={13} />
+                      </button>
                     </div>
                   )}
                 </div>

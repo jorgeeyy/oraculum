@@ -61,6 +61,8 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    # Thumbs feedback on the assistant answer: "up" / "down" / NULL (none).
+    feedback: Mapped[str | None] = mapped_column(String(8), nullable=True)
     sources_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     retrieval_ms: Mapped[float | None] = mapped_column(Float, nullable=True)

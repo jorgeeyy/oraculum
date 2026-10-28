@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     chat_timeout_seconds: float = 30.0
     chat_max_retries: int = 3
 
+    # Multi-turn chat (pre-Phase 7)
+    # Prior user/assistant turns replayed into the prompt when a request
+    # carries a conversation_id. 0 disables history (stateless behaviour).
+    # Bounded so an old thread cannot blow the context window.
+    chat_history_turns: int = Field(default=4, ge=0, le=20)
+    # Rewrite follow-up questions ("what about part-timers?") into a
+    # standalone retrieval query - only when history is present; stateless
+    # questions are already standalone and are never rewritten. On failure
+    # the raw question is used, so this can never break a request.
+    chat_query_rewrite: bool = True
+
     # Reliability and security (Phase 5)
     rate_limit_per_minute: int = 60  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it

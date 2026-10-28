@@ -116,6 +116,8 @@ class RecordingGenerator:
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.rewrite_calls: list[dict] = []
+        self.rewrite_result: str | None = None  # None = echo the raw question
         self.result: GenerationResult = GenerationResult(
             answer="Employees receive 20 days of annual leave.",
             status="answered",
@@ -124,12 +126,49 @@ class RecordingGenerator:
             elapsed_ms=5.0,
         )
         self.fail: Exception | None = None
+        # Streaming behaviour: how to split the answer into deltas, and an
+        # optional exception raised after that many deltas (mid-stream failure).
+        self.stream_chunks: list[str] | None = None  # None = split answer in half
+        self.stream_fail_after: int | None = None
+        self.stream_calls: list[dict] = []
+        self.stream_events: list[tuple[str, object]] = []
 
-    def generate(self, question, evidence):
+    def generate(self, question, evidence, history=None):
         if self.fail is not None:
             raise self.fail
-        self.calls.append({"question": question, "evidence": list(evidence)})
+        self.calls.append(
+            {"question": question, "evidence": list(evidence), "history": history}
+        )
         return self.result
+
+    def generate_stream(self, question, evidence, history=None):
+        """Same contract as Generator.generate_stream: deltas, then a result."""
+        if self.fail is not None:
+            raise self.fail
+        self.stream_calls.append(
+            {"question": question, "evidence": list(evidence), "history": history}
+        )
+        if not evidence:  # matches the real short-circuit: no LLM involvement
+            yield ("result", self.result)
+            return
+        answer = self.result.answer
+        chunks = self.stream_chunks
+        if chunks is None:
+            half = max(1, len(answer) // 2)
+            chunks = [answer[:half], answer[half:]]
+        for index, chunk in enumerate(chunks):
+            if self.stream_fail_after is not None and index >= self.stream_fail_after:
+                raise self.fail or GenerationServiceError("stream broke")
+            event = ("delta", chunk)
+            self.stream_events.append(event)
+            yield event
+        event = ("result", self.result)
+        self.stream_events.append(event)
+        yield event
+
+    def rewrite_query(self, question, history):
+        self.rewrite_calls.append({"question": question, "history": history})
+        return self.rewrite_result if self.rewrite_result is not None else question
 
 
 class _PermissiveRateLimiter:

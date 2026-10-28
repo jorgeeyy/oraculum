@@ -56,6 +56,8 @@ Copy-Item .env.example .env
 | `CHAT_MODEL` | OpenAI chat model for answers (default `gpt-4o-mini`) |
 | `CHAT_MAX_TOKENS` | Max tokens per generated answer (default `500`) |
 | `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |
+| `CHAT_HISTORY_TURNS` | Prior turns replayed into the prompt on `conversation_id` requests (default `4`; `0` disables history) |
+| `CHAT_QUERY_REWRITE` | Rewrite follow-up questions into a standalone retrieval query when history exists (default `true`; stateless questions are never rewritten) |
 | `RATE_LIMIT_PER_MINUTE` | Per-IP cap on `/chat` + `/retrieve` (default `60`; `0` disables) |
 | `API_KEY` | When set, `/documents`, `/retrieve`, `/chat` require this key (unset = open) |
 | `LOG_FILE` | Rotating application log file (default `data/logs/oraculum.log`; set empty to disable) |
@@ -138,6 +140,8 @@ Set `LOG_FILE=` (empty) in `.env` to disable file logging.
 | `DELETE` | `/documents/{id}` | Remove a document's vectors, stored file, and record |
 | `POST` | `/retrieve` | Semantic search: question in, top-k chunks out with scores and citations |
 | `POST` | `/chat` | Grounded Q&A: short answer with resolved source citations, or an explicit insufficient-evidence refusal; pass `conversation_id` to persist the exchange |
+| `POST` | `/chat/stream` | Same request contract as `/chat`, answered as Server-Sent Events (`meta` → `delta`* → `done` \| `error`) |
+| `PUT` | `/chat/messages/{id}/feedback` | Thumbs on one stored answer: `{"rating": "up" \| "down" \| null}` (`null` clears); 404 outside the API-key scope |
 | `GET` | `/conversations` | List saved chats (id, title, message count, activity) |
 | `GET` | `/conversations/{id}` | Full thread: title plus every stored message in order |
 | `PATCH` | `/conversations/{id}` | Rename a chat |
@@ -168,6 +172,16 @@ curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" `
 curl -X POST http://127.0.0.1:8000/chat -H "Content-Type: application/json" `
   -d "{\"question\": \"What about carry-over?\", \"conversation_id\": \"<id from previous reply>\"}"
 curl http://127.0.0.1:8000/conversations
+
+# streaming answer (SSE): meta first, then delta text, then the authoritative
+# `done` payload - replace the streamed text with done.answer when it lands.
+curl -N -X POST http://127.0.0.1:8000/chat/stream -H "Content-Type: application/json" `
+  -d "{\"question\": \"How many days of annual leave?\"}"
+
+# thumbs feedback on a stored answer (message_id comes back in the chat
+# response; null clears a previous vote):
+curl -X PUT http://127.0.0.1:8000/chat/messages/<message_id>/feedback `
+  -H "Content-Type: application/json" -d "{\"rating\": \"up\"}"
 
 # or the standalone smoke script:
 uv run python scripts/verify_index.py "How many days of annual leave?"
@@ -214,6 +228,50 @@ Set `RETRIEVAL_HYBRID=false` to restore the exact legacy vector-only path.
    is downgraded to `insufficient_evidence` so uncited claims are never presented as
    grounded facts.
 
+### Streaming, follow-ups, and feedback (pre-Phase 7)
+
+Three chat capabilities added before the Phase 7 hardening push. All of them are
+additive: the plain `POST /chat` contract and its stateless path are unchanged,
+so existing scripts, tests, and eval numbers stay exactly where they were.
+
+**Streaming — `POST /chat/stream`.** Identical request body to `/chat`, answered
+as Server-Sent Events:
+
+| Event | Payload | Meaning |
+|---|---|---|
+| `meta` | `model`, `retrieval_ms`, `rewritten`, `has_evidence` | Retrieval finished; the UI can react before any text exists |
+| `delta` | `{"text": ...}` | Incremental answer text, decoded from the model's JSON `answer` field |
+| `done` | full `ChatResponse` | **Authoritative** — validated citations, status, timings, `conversation_id`, `message_id` |
+| `error` | `{"message": ...}` | Generation failed mid-stream (mirrors the plain endpoint's 503) |
+
+`delta` text is cosmetic: the client renders it live but **must replace it with
+`done.answer`** when `done` lands. Failures before the stream starts (422, 404,
+rate limit, retrieval outage) are still normal HTTP status codes. Retries after
+a transient error only happen before the first delta is emitted — replaying
+text already on the wire would duplicate it, so a mid-stream failure surfaces
+as `error` instead.
+
+**Multi-turn context + query rewrite.** Requests carrying a `conversation_id`
+load the last `CHAT_HISTORY_TURNS` exchanges (default 4) into the prompt as a
+labelled transcript inside the single user message — every untrusted string
+(earlier user turns *and* earlier model output) stays in one block, never in the
+trusted system prompt. Because a follow-up like "what about part-timers?" is
+not standalone, the same request rewrites it into a retrieval query first
+(`CHAT_QUERY_REWRITE`, default `true`); the stored/displayed question stays
+raw. The rewrite is best-effort: any failure falls back to the raw question,
+and **stateless requests are never rewritten**, so single-shot Q&A behaves
+byte-for-byte as before. A missing or foreign `conversation_id` 404s before
+any LLM spend.
+
+**Feedback — `PUT /chat/messages/{id}/feedback`.** Persisted answers carry a
+`message_id` (in the response body, or in the stream's `done` event) that takes
+`{"rating": "up" | "down"}`; sending `null` clears a vote, and clicking the
+active thumb again does the same. Votes live in `chat_messages.feedback`
+(nullable column, one Alembic migration) and are scoped to the owning API-key
+fingerprint — a wrong scope gets 404, never a probe oracle. `GET
+/conversations/{id}` returns `feedback` per message so threads reload with
+their votes intact. `scripts/export_feedback.py` dumps votes for analysis.
+
 ### Reliability and security (Phase 5)
 
 - **Shared OpenAI client** — one cached client per (key, timeout) reuses HTTP
@@ -254,12 +312,17 @@ Set `RETRIEVAL_HYBRID=false` to restore the exact legacy vector-only path.
 A React + Vite + TypeScript single-page UI (Tailwind CSS v4, sidebar
 navigation, no router) with two views:
 
-- **Chat** — ask questions, get grounded answers with expandable source
-  excerpts, status chip (grounded vs insufficient evidence), and timing;
-  401 opens an API-key modal, 429 shows a retry countdown. The sidebar
-  lists saved chats with a **New chat** button, resume on click, and
-  inline delete; threads reload from `GET /conversations/{id}` and the
-  first message of a new thread creates the conversation server-side
+- **Chat** — ask questions and watch the answer **stream in live** (SSE
+  `meta`/`delta`/`done`; the streamed text is always replaced by the
+  server's validated `done.answer`), with expandable source excerpts,
+  status chip (grounded vs insufficient evidence), timing, and 👍/👎
+  feedback per answer (optimistic toggle, `null` to clear, votes reload
+  with the thread); 401 opens an API-key modal, 429 shows a retry
+  countdown, and a failed stream rolls back the bubble and restores your
+  question. The sidebar lists saved chats with a **New chat** button,
+  resume on click, and inline delete; threads reload from
+  `GET /conversations/{id}` and the first message of a new thread creates
+  the conversation server-side
 - **Documents** — drag-and-drop upload (returns instantly; indexing runs in
   the background and the list auto-refreshes every 2 s while anything is
   pending/processing), duplicate uploads are detected and reported, list
@@ -275,7 +338,7 @@ cd frontend
 npm install          # once
 npm run dev          # dev server + proxy → :5173
 npm run typecheck    # tsc --noEmit
-npm test             # vitest (API client error-mapping tests)
+npm test             # vitest (API client, SSE parser, streaming, feedback)
 npm run build        # typecheck + production build to frontend/dist
 ```
 

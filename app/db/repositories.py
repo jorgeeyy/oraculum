@@ -206,6 +206,39 @@ def list_conversations(
     ]
 
 
+def load_chat_history(
+    session: Session,
+    conversation_id: str,
+    *,
+    api_key_hash: str | None,
+    limit: int,
+) -> list[dict] | None:
+    """Recent chat turns for prompt context, oldest first.
+
+    Returns None when the conversation is absent or owned by another key
+    (caller decides on 404); an empty list means "exists but no usable
+    history". Only role/content are loaded - sources and timings are not
+    needed to build context.
+    """
+    conversation = session.get(Conversation, uuid.UUID(conversation_id))
+    if conversation is None or conversation.api_key_hash != api_key_hash:
+        return None
+    if limit <= 0:
+        return []
+    rows = session.scalars(
+        select(ChatMessage)
+        .where(
+            ChatMessage.conversation_id == conversation.id,
+            ChatMessage.role.in_(("user", "assistant")),
+        )
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id)
+    ).all()
+    recent = list(reversed(rows[:limit]))  # oldest first within the window
+    return [
+        {"role": message.role, "content": message.content} for message in recent
+    ]
+
+
 def get_conversation(
     session: Session, conversation_id: str, *, api_key_hash: str | None
 ) -> ConversationDetail | None:
@@ -288,12 +321,75 @@ def _to_message_record(message: ChatMessage) -> MessageRecord:
         role=message.role,
         content=message.content,
         status=message.status,
+        feedback=message.feedback,
         sources=sources,
         model=message.model,
         retrieval_ms=message.retrieval_ms,
         generation_ms=message.generation_ms,
         created_at=message.created_at,
     )
+
+
+def list_feedback(session: Session, *, rating: str | None = None) -> list[dict]:
+    """Rated assistant messages, newest first (export/analytics helper).
+
+    Joins the owning conversation so rows carry both ids; `rating` narrows to
+    one bucket ("up"/"down"). Answers are included verbatim so an analyst can
+    see what was voted on without a second query.
+    """
+    stmt = (
+        select(ChatMessage, Conversation)
+        .join(Conversation, ChatMessage.conversation_id == Conversation.id)
+        .where(
+            ChatMessage.role == "assistant",
+            ChatMessage.feedback.is_not(None),
+        )
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id)
+    )
+    if rating is not None:
+        stmt = stmt.where(ChatMessage.feedback == rating)
+    rows = session.execute(stmt).all()
+    return [
+        {
+            "message_id": str(message.id),
+            "conversation_id": str(conversation.id),
+            "feedback": message.feedback,
+            "status": message.status,
+            "model": message.model,
+            "created_at": message.created_at.isoformat(),
+            "answer": message.content,
+        }
+        for message, conversation in rows
+    ]
+
+
+def set_message_feedback(
+    session: Session,
+    message_id: str,
+    *,
+    api_key_hash: str | None,
+    rating: str | None,
+) -> tuple[bool, str | None]:
+    """Set (or clear, rating=None) the 👍/👎 feedback on one assistant message.
+
+    Ownership follows the conversation's api_key_hash; only assistant
+    messages can carry feedback. Returns (found, new_rating): found is False
+    when the message is absent, not an answer, or out of scope (caller raises
+    404); new_rating is the stored value after the operation.
+    """
+    try:
+        parsed_id = uuid.UUID(message_id)
+    except ValueError:
+        return False, None
+    message = session.get(ChatMessage, parsed_id)
+    if message is None or message.role != "assistant":
+        return False, None
+    conversation = session.get(Conversation, message.conversation_id)
+    if conversation is None or conversation.api_key_hash != api_key_hash:
+        return False, None
+    message.feedback = rating
+    session.commit()
+    return True, rating
 
 
 def save_chat_exchange(
@@ -309,11 +405,13 @@ def save_chat_exchange(
     model: str,
     retrieval_ms: float,
     generation_ms: float,
-) -> str:
+) -> tuple[str, str]:
     """Persist a user question + assistant answer as one transaction.
 
     Creates the conversation when conversation_id is None. Touching
-    updated_at keeps the sidebar ordered by most recent activity.
+    updated_at keeps the sidebar ordered by most recent activity. Returns
+    (conversation_id, assistant_message_id) so callers can expose the
+    message id for per-answer feedback.
     """
     if conversation_id is None:
         conversation = Conversation(title=title, api_key_hash=api_key_hash)
@@ -337,19 +435,20 @@ def save_chat_exchange(
             created_at=now,
         )
     )
-    session.add(
-        ChatMessage(
-            conversation_id=conversation.id,
-            role="assistant",
-            content=answer,
-            status=status,
-            sources_json=[source.model_dump() for source in sources],
-            model=model,
-            retrieval_ms=retrieval_ms,
-            generation_ms=generation_ms,
-            created_at=now + timedelta(microseconds=1),
-        )
+    answer_message = ChatMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=answer,
+        status=status,
+        sources_json=[source.model_dump() for source in sources],
+        model=model,
+        retrieval_ms=retrieval_ms,
+        generation_ms=generation_ms,
+        created_at=now + timedelta(microseconds=1),
     )
+    session.add(answer_message)
     conversation.updated_at = datetime.now()
+    session.flush()  # assign the assistant message id before commit
+    result = (str(conversation.id), str(answer_message.id))
     session.commit()
-    return str(conversation.id)
+    return result

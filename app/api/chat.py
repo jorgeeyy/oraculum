@@ -1,14 +1,25 @@
+import json
 import logging
+import uuid
+from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from app.api.auth import api_key_fingerprint
-from app.api.deps import open_db_session
+from app.api.deps import get_db_session, open_db_session
 from app.api.documents import get_embedder
 from app.api.retrieve import resolve_top_k
 from app.config import Settings, get_settings
 from app.db import repositories
-from app.schemas.chat import ChatRequest, ChatResponse, Source
+from app.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    Source,
+)
 from app.services.bm25_index import Bm25Index, get_bm25_index
 from app.services.embeddings import Embedder
 from app.services.errors import (
@@ -29,6 +40,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 _TITLE_CHARS = 60
+
+
+def _sse(event: str, data: dict) -> str:
+    """One Server-Sent Events frame (single-line JSON payload)."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def get_generator(settings: Settings = Depends(get_settings)) -> Generator:
@@ -69,16 +85,17 @@ def _persist_exchange(
     model: str,
     retrieval_ms: float,
     generation_ms: float,
-) -> str:
+) -> tuple[str, str] | None:
     """Save the exchange; ownership of an existing conversation is re-checked.
 
     The session opens only here so stateless /chat requests never touch the
-    database.
+    database. Returns (conversation_id, message_id) when the request opted
+    into persistence, otherwise None (still stateless).
     """
+    if "conversation_id" not in request.model_fields_set:
+        return None
     owner = api_key_fingerprint(settings)
-    conversation_id = (
-        request.conversation_id if "conversation_id" in request.model_fields_set else None
-    )
+    conversation_id = request.conversation_id
     session = open_db_session()
     try:
         if conversation_id is not None:
@@ -107,27 +124,57 @@ def _persist_exchange(
         session.close()
 
 
-@router.post("", response_model=ChatResponse, dependencies=[Depends(enforce_rate_limit)])
-def chat(
+def _prepare_chat(
     request: ChatRequest,
-    embedder: Embedder = Depends(get_embedder),
-    store: VectorStore = Depends(get_vector_store),
-    bm25: Bm25Index = Depends(get_bm25_index),
-    generator: Generator = Depends(get_generator),
-    settings: Settings = Depends(get_settings),
-) -> ChatResponse:
-    """Answer a question from retrieved evidence with resolved citations.
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    bm25: Bm25Index,
+    generator: Generator,
+    settings: Settings,
+):
+    """Shared pre-generation phase for /chat and /chat/stream.
 
-    Retrieval runs first; if nothing is found the answer is a refusal and the
-    LLM is never called. When evidence exists, the model must cite it, and
-    every citation is resolved against the real retrieved chunks - unknown
-    citations are dropped and uncited answers are downgraded to
-    insufficient_evidence.
+    Resolves top_k, loads conversation history (early 404), rewrites the
+    follow-up into a standalone query when history exists, and retrieves.
+    Returns (retrieval, history, rewritten). Raises HTTPException on the
+    same conditions as the plain endpoint.
     """
     top_k = resolve_top_k(request.top_k, settings)
+
+    # Multi-turn: load prior turns when the request targets an existing
+    # conversation. Ownership is checked HERE (not only at persist time), so
+    # a missing/foreign conversation 404s before any LLM spend.
+    history: list[dict] | None = None
+    if (
+        "conversation_id" in request.model_fields_set
+        and request.conversation_id is not None
+    ):
+        session = open_db_session()
+        try:
+            history = repositories.load_chat_history(
+                session,
+                request.conversation_id,
+                api_key_hash=api_key_fingerprint(settings),
+                limit=settings.chat_history_turns * 2,
+            )
+        finally:
+            session.close()
+        if history is None:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    # Follow-ups ("what about part-timers?") are rewritten into a standalone
+    # query for retrieval only; the stored/displayed question stays raw.
+    # Stateless requests have no history and are never rewritten.
+    retrieval_query = request.question
+    rewritten = False
+    if history and settings.chat_query_rewrite:
+        retrieval_query = generator.rewrite_query(request.question, history)
+        rewritten = retrieval_query != request.question
+
     try:
         retrieval = retrieve_documents(
-            request.question,
+            retrieval_query,
             embedder=embedder,
             store=store,
             top_k=top_k,
@@ -150,21 +197,47 @@ def chat(
             status_code=503,
             detail={"message": "Vector search is unavailable. Try again."},
         ) from exc
+    return retrieval, history, rewritten
+
+
+@router.post("", response_model=ChatResponse, dependencies=[Depends(enforce_rate_limit)])
+def chat(
+    request: ChatRequest,
+    embedder: Embedder = Depends(get_embedder),
+    store: VectorStore = Depends(get_vector_store),
+    bm25: Bm25Index = Depends(get_bm25_index),
+    generator: Generator = Depends(get_generator),
+    settings: Settings = Depends(get_settings),
+) -> ChatResponse:
+    """Answer a question from retrieved evidence with resolved citations.
+
+    Retrieval runs first; if nothing is found the answer is a refusal and the
+    LLM is never called. When evidence exists, the model must cite it, and
+    every citation is resolved against the real retrieved chunks - unknown
+    citations are dropped and uncited answers are downgraded to
+    insufficient_evidence.
+    """
+    retrieval, history, rewritten = _prepare_chat(
+        request,
+        embedder=embedder,
+        store=store,
+        bm25=bm25,
+        generator=generator,
+        settings=settings,
+    )
 
     # No evidence: refuse deterministically without spending an LLM call.
     if not retrieval.results:
-        conversation_id = None
-        if "conversation_id" in request.model_fields_set:
-            conversation_id = _persist_exchange(
-                settings,
-                request,
-                answer=INSUFFICIENT_ANSWER,
-                status="insufficient_evidence",
-                sources=[],
-                model=generator.model,
-                retrieval_ms=round(retrieval.elapsed_ms, 1),
-                generation_ms=0.0,
-            )
+        saved = _persist_exchange(
+            settings,
+            request,
+            answer=INSUFFICIENT_ANSWER,
+            status="insufficient_evidence",
+            sources=[],
+            model=generator.model,
+            retrieval_ms=round(retrieval.elapsed_ms, 1),
+            generation_ms=0.0,
+        )
         return ChatResponse(
             question=request.question,
             answer=INSUFFICIENT_ANSWER,
@@ -173,11 +246,12 @@ def chat(
             model=generator.model,
             retrieval_ms=round(retrieval.elapsed_ms, 1),
             generation_ms=0.0,
-            conversation_id=conversation_id,
+            conversation_id=saved[0] if saved else None,
+            message_id=saved[1] if saved else None,
         )
 
     try:
-        outcome = generator.generate(request.question, retrieval.results)
+        outcome = generator.generate(request.question, retrieval.results, history)
     except GenerationNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except GenerationServiceError as exc:
@@ -189,7 +263,8 @@ def chat(
 
     logger.info(
         "chat status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f "
-        "tokens_in=%d tokens_out=%d embed_retries=%d gen_retries=%d question=%r",
+        "tokens_in=%d tokens_out=%d embed_retries=%d gen_retries=%d "
+        "rewritten=%s question=%r",
         outcome.status,
         len(outcome.sources),
         retrieval.elapsed_ms,
@@ -198,11 +273,150 @@ def chat(
         outcome.tokens_out,
         getattr(embedder, "retry_count", 0),
         getattr(generator, "retry_count", 0),
+        rewritten,
         request.question[:60],
     )
-    conversation_id = None
-    if "conversation_id" in request.model_fields_set:
-        conversation_id = _persist_exchange(
+    saved = _persist_exchange(
+        settings,
+        request,
+        answer=outcome.answer,
+        status=outcome.status,
+        sources=outcome.sources,
+        model=outcome.model,
+        retrieval_ms=round(retrieval.elapsed_ms, 1),
+        generation_ms=round(outcome.elapsed_ms, 1),
+    )
+    return ChatResponse(
+        question=request.question,
+        answer=outcome.answer,
+        status=outcome.status,
+        sources=outcome.sources,
+        model=outcome.model,
+        retrieval_ms=round(retrieval.elapsed_ms, 1),
+        generation_ms=round(outcome.elapsed_ms, 1),
+        conversation_id=saved[0] if saved else None,
+        message_id=saved[1] if saved else None,
+    )
+
+
+@router.post("/stream", dependencies=[Depends(enforce_rate_limit)])
+def chat_stream(
+    request: ChatRequest,
+    embedder: Embedder = Depends(get_embedder),
+    store: VectorStore = Depends(get_vector_store),
+    bm25: Bm25Index = Depends(get_bm25_index),
+    generator: Generator = Depends(get_generator),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Stream an answer as Server-Sent Events.
+
+    Event protocol (each frame: `event: <type>` + single-line JSON `data`):
+
+    - `meta`  - retrieval finished; carries model + retrieval_ms so the UI
+      can react before any answer text exists.
+    - `delta` - incremental answer text (extracted from the model's JSON
+      answer field; cosmetic only).
+    - `done`  - the authoritative ChatResponse payload (validated citations,
+      status, timings, conversation_id). Clients MUST replace any streamed
+      text with `done.answer`.
+    - `error` - generation failed mid-stream; mirrors the plain endpoint's
+      503 detail.
+
+    Pre-stream failures (bad request, unknown conversation, retrieval
+    outage) still return normal HTTP status codes because they happen
+    before the response starts.
+    """
+    retrieval, history, rewritten = _prepare_chat(
+        request,
+        embedder=embedder,
+        store=store,
+        bm25=bm25,
+        generator=generator,
+        settings=settings,
+    )
+
+    def event_source() -> Iterator[str]:
+        yield _sse(
+            "meta",
+            {
+                "model": generator.model,
+                "retrieval_ms": round(retrieval.elapsed_ms, 1),
+                "rewritten": rewritten,
+                "has_evidence": bool(retrieval.results),
+            },
+        )
+
+        # No evidence: refuse deterministically without spending an LLM call.
+        if not retrieval.results:
+            saved = _persist_exchange(
+                settings,
+                request,
+                answer=INSUFFICIENT_ANSWER,
+                status="insufficient_evidence",
+                sources=[],
+                model=generator.model,
+                retrieval_ms=round(retrieval.elapsed_ms, 1),
+                generation_ms=0.0,
+            )
+            yield _sse(
+                "done",
+                ChatResponse(
+                    question=request.question,
+                    answer=INSUFFICIENT_ANSWER,
+                    status="insufficient_evidence",
+                    sources=[],
+                    model=generator.model,
+                    retrieval_ms=round(retrieval.elapsed_ms, 1),
+                    generation_ms=0.0,
+                    conversation_id=saved[0] if saved else None,
+                    message_id=saved[1] if saved else None,
+                ).model_dump(),
+            )
+            return
+
+        try:
+            outcome = None
+            for kind, payload in generator.generate_stream(
+                request.question, retrieval.results, history
+            ):
+                if kind == "delta":
+                    yield _sse("delta", {"text": payload})
+                else:
+                    outcome = payload
+        except GenerationNotConfiguredError as exc:
+            yield _sse("error", {"message": str(exc)})
+            return
+        except GenerationServiceError as exc:
+            logger.warning("Streamed generation failed: %s", exc)
+            yield _sse(
+                "error",
+                {"message": "The answer service is unavailable. Try again."},
+            )
+            return
+
+        if outcome is None:  
+            yield _sse(
+                "error",
+                {"message": "The answer service is unavailable. Try again."},
+            )
+            return
+
+        logger.info(
+            "chat(stream) status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f "
+            "tokens_in=%d tokens_out=%d embed_retries=%d gen_retries=%d "
+            "rewritten=%s question=%r",
+            outcome.status,
+            len(outcome.sources),
+            retrieval.elapsed_ms,
+            outcome.elapsed_ms,
+            outcome.tokens_in,
+            outcome.tokens_out,
+            getattr(embedder, "retry_count", 0),
+            getattr(generator, "retry_count", 0),
+            rewritten,
+            request.question[:60],
+        )
+        saved = _persist_exchange(
             settings,
             request,
             answer=outcome.answer,
@@ -212,13 +426,57 @@ def chat(
             retrieval_ms=round(retrieval.elapsed_ms, 1),
             generation_ms=round(outcome.elapsed_ms, 1),
         )
-    return ChatResponse(
-        question=request.question,
-        answer=outcome.answer,
-        status=outcome.status,
-        sources=outcome.sources,
-        model=outcome.model,
-        retrieval_ms=round(retrieval.elapsed_ms, 1),
-        generation_ms=round(outcome.elapsed_ms, 1),
-        conversation_id=conversation_id,
+        yield _sse(
+            "done",
+            ChatResponse(
+                question=request.question,
+                answer=outcome.answer,
+                status=outcome.status,
+                sources=outcome.sources,
+                model=outcome.model,
+                retrieval_ms=round(retrieval.elapsed_ms, 1),
+                generation_ms=round(outcome.elapsed_ms, 1),
+                conversation_id=saved[0] if saved else None,
+                message_id=saved[1] if saved else None,
+            ).model_dump(),
+        )
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Disable proxy buffering so frames flush immediately.
+            "X-Accel-Buffering": "no",
+        },
     )
+
+
+@router.put(
+    "/messages/{message_id}/feedback",
+    response_model=FeedbackResponse,
+    dependencies=[Depends(enforce_rate_limit)],
+)
+def set_message_feedback(
+    message_id: uuid.UUID,
+    payload: FeedbackRequest,
+    settings: Settings = Depends(get_settings),
+    session: Session = Depends(get_db_session),
+) -> FeedbackResponse:
+    """Set or clear 👍/👎 feedback on one assistant answer.
+
+    Rating "up"/"down" records the vote, null clears it (toggle off). The
+    message must belong to a conversation in this API-key scope, otherwise
+    404 - feedback can never probe whether a message id exists elsewhere.
+    """
+    rating = payload.rating
+    found, stored = repositories.set_message_feedback(
+        session,
+        str(message_id),
+        api_key_hash=api_key_fingerprint(settings),
+        rating=rating,
+    )
+    if not found:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    return FeedbackResponse(message_id=str(message_id), feedback=stored)

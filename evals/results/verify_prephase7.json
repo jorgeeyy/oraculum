@@ -1,0 +1,1093 @@
+{
+  "generated_at": "2026-10-27T13:11:21.172055+00:00",
+  "app_version": "0.8.0",
+  "git_commit": "d3cc3cb",
+  "dataset_sha256": "9ff4c89e022a7116",
+  "config": {
+    "top_k": 8,
+    "hybrid": true,
+    "rrf_k": 60,
+    "chat_model": "gpt-4o-mini",
+    "embedding_model": "text-embedding-3-small",
+    "num_questions": 41
+  },
+  "retrieval": {
+    "generated_at": "2026-10-27T13:11:40.228943+00:00",
+    "corpus": [
+      "samples/employee_handbook.md",
+      "samples/it_support_guide.md",
+      "samples/security_policy.md"
+    ],
+    "top_k": 8,
+    "hybrid": true,
+    "rrf_k": 60,
+    "score_semantics": "rrf",
+    "num_questions": 41,
+    "answerable": {
+      "count": 32,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr": 0.984
+    },
+    "no_answer": {
+      "count": 9,
+      "top1_scores": [
+        0.033,
+        0.033,
+        0.032,
+        0.032,
+        0.033,
+        0.033,
+        0.033,
+        0.033,
+        0.033
+      ],
+      "max_top1_score": 0.033
+    },
+    "latency_ms": {
+      "mean": 463.568,
+      "max": 2647.3
+    },
+    "per_question": [
+      {
+        "question": "How many days of paid annual leave do full-time employees get?",
+        "type": "factual",
+        "latency_ms": 2647.3,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How do I reset a forgotten password?",
+        "type": "factual",
+        "latency_ms": 360.9,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How long must a company password be and when does it expire?",
+        "type": "factual",
+        "latency_ms": 396.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How often must employees complete security awareness training?",
+        "type": "factual",
+        "latency_ms": 371.5,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What is the daily meal reimbursement limit for business travel?",
+        "type": "factual",
+        "latency_ms": 1365.8,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What is the annual leave carry-over limit and when must security training be completed?",
+        "type": "multi_doc",
+        "latency_ms": 354.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What is the sick leave self-certification period and the incident reporting timeframe?",
+        "type": "multi_doc",
+        "latency_ms": 351.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What should I do if the VPN disconnects after a few minutes?",
+        "type": "distractor",
+        "latency_ms": 412.5,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How do I regain access when locked out of the authenticator app?",
+        "type": "distractor",
+        "latency_ms": 416.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How many days of parental leave are new fathers entitled to?",
+        "type": "no_answer",
+        "latency_ms": 581.2,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "What is the company policy on bringing pets to the office?",
+        "type": "no_answer",
+        "latency_ms": 344.0,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "What bonus scheme applies to engineering staff?",
+        "type": "no_answer",
+        "latency_ms": 445.6,
+        "top1_score": 0.032,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "How far in advance must leave be requested for absences of three days or more?",
+        "type": "factual",
+        "latency_ms": 375.0,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "Until when must carried-over leave days be used or do they expire?",
+        "type": "factual",
+        "latency_ms": 384.9,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "By what time must employees notify their line manager of illness?",
+        "type": "factual",
+        "latency_ms": 386.8,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "Within how many days must business expenses be submitted?",
+        "type": "factual",
+        "latency_ms": 365.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "When are receipts required for an expense claim?",
+        "type": "factual",
+        "latency_ms": 404.9,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How many days per week may employees work remotely?",
+        "type": "factual",
+        "latency_ms": 359.1,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What is the IT service desk extension number?",
+        "type": "factual",
+        "latency_ms": 369.0,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What should I do first if a print job is stuck?",
+        "type": "factual",
+        "latency_ms": 351.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "Who handles toner replacements?",
+        "type": "factual",
+        "latency_ms": 409.9,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.016
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What is the self-service password reset portal address?",
+        "type": "factual",
+        "latency_ms": 384.8,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What should I check first if the VPN fails to connect?",
+        "type": "factual",
+        "latency_ms": 444.9,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What are the three data classification labels?",
+        "type": "factual",
+        "latency_ms": 379.4,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "Which password manager is approved by IT?",
+        "type": "factual",
+        "latency_ms": 406.6,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "After how many minutes of inactivity does the screen lock?",
+        "type": "factual",
+        "latency_ms": 361.0,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How quickly must a lost or stolen device be reported?",
+        "type": "factual",
+        "latency_ms": 404.1,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How quickly are security incidents triaged during business hours?",
+        "type": "factual",
+        "latency_ms": 362.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What email address must suspected phishing be reported to?",
+        "type": "factual",
+        "latency_ms": 357.2,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "Is split tunnelling allowed on the VPN?",
+        "type": "factual",
+        "latency_ms": 363.1,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How do I get network access when the VPN says 'Access denied'?",
+        "type": "multi_doc",
+        "latency_ms": 398.4,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What are the remote working rules and what does security require of devices?",
+        "type": "multi_doc",
+        "latency_ms": 355.5,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "How do I request leave, and who do I contact if I am locked out of my account?",
+        "type": "multi_doc",
+        "latency_ms": 394.5,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "Can I use my personal laptop to connect to the VPN?",
+        "type": "distractor",
+        "latency_ms": 352.2,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 0.5
+      },
+      {
+        "question": "How do I order toner for the office printer?",
+        "type": "distractor",
+        "latency_ms": 366.6,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ],
+        "recall@3": 1.0,
+        "recall@5": 1.0,
+        "reciprocal_rank": 1.0
+      },
+      {
+        "question": "What is the company's policy on office parking spaces?",
+        "type": "no_answer",
+        "latency_ms": 366.7,
+        "top1_score": 0.032,
+        "retrieved": [
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "How many days of sabbatical leave does the company offer?",
+        "type": "no_answer",
+        "latency_ms": 380.3,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "What is the expense limit for international flights?",
+        "type": "no_answer",
+        "latency_ms": 382.9,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "How do I get a company credit card for travel expenses?",
+        "type": "no_answer",
+        "latency_ms": 357.5,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "What dress code applies to client visits?",
+        "type": "no_answer",
+        "latency_ms": 332.7,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      },
+      {
+        "question": "What is the notice period for resigning from the company?",
+        "type": "no_answer",
+        "latency_ms": 399.6,
+        "top1_score": 0.033,
+        "retrieved": [
+          {
+            "filename": "security_policy.md",
+            "page": 1,
+            "score": 0.033
+          },
+          {
+            "filename": "employee_handbook.md",
+            "page": 1,
+            "score": 0.032
+          },
+          {
+            "filename": "it_support_guide.md",
+            "page": 1,
+            "score": 0.032
+          }
+        ]
+      }
+    ]
+  }
+}

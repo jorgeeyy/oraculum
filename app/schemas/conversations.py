@@ -18,6 +18,8 @@ class MessageRecord(BaseModel):
     role: str
     content: str
     status: str | None = None
+    # Thumbs feedback on assistant answers: "up" / "down" / None.
+    feedback: str | None = None
     sources: list[Source] = Field(default_factory=list)
     model: str | None = None
     retrieval_ms: float | None = None
