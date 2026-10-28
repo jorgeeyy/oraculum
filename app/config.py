@@ -74,6 +74,28 @@ class Settings(BaseSettings):
     # the raw question is used, so this can never break a request.
     chat_query_rewrite: bool = True
 
+    # Semantic answer cache (off until eval-validated).
+    # A question whose embedding is at least min_similarity cosine-similar
+    # to a cached one - within max_age_hours, against an unchanged corpus
+    # fingerprint, same document filter and same model - is answered from
+    # cache: no retrieval, no LLM call. Only "answered" responses are ever
+    # stored (refusals cost nothing to regenerate and caching them could
+    # hide newly indexed evidence). Any cache failure skips the cache and
+    # the request continues down the normal path.
+    chat_cache_enabled: bool = False
+    chat_cache_min_similarity: float = Field(default=0.97, ge=0.0, le=1.0)
+    chat_cache_max_age_hours: float = Field(default=24.0, gt=0.0)
+    chat_cache_collection: str = "chat_cache"
+
+    # Multi-query expansion (off until eval-validated).
+    # The retrieval query is rephrased into N variants; original + variants
+    # are embedded in one batch, searched on both the vector store and BM25,
+    # and fused with RRF. Runs after the follow-up rewrite and applies to
+    # stateless questions too. On any failure it degrades to the original
+    # query alone, so it can never break a request.
+    chat_query_expansion: bool = False
+    chat_query_expansion_variants: int = Field(default=2, ge=1, le=5)
+
     # Reliability and security (Phase 5)
     rate_limit_per_minute: int = 60  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it

@@ -118,6 +118,8 @@ class RecordingGenerator:
         self.calls: list[dict] = []
         self.rewrite_calls: list[dict] = []
         self.rewrite_result: str | None = None  # None = echo the raw question
+        self.expansion_calls: list[dict] = []
+        self.expansion_result: list[str] = []  # returned as-is (empty = no variants)
         self.result: GenerationResult = GenerationResult(
             answer="Employees receive 20 days of annual leave.",
             status="answered",
@@ -169,6 +171,10 @@ class RecordingGenerator:
     def rewrite_query(self, question, history):
         self.rewrite_calls.append({"question": question, "history": history})
         return self.rewrite_result if self.rewrite_result is not None else question
+
+    def expand_query(self, question, count=2):
+        self.expansion_calls.append({"question": question, "count": count})
+        return list(self.expansion_result)
 
 
 class _PermissiveRateLimiter:

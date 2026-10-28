@@ -24,6 +24,7 @@ from app.schemas.documents import (
     DocumentRecord,
     UploadDocumentResponse,
 )
+from app.services.answer_cache import invalidate_answer_cache
 from app.services.bm25_index import Bm25Error, Bm25Index, get_bm25_index
 from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
@@ -365,6 +366,9 @@ def delete_document(
         ) from exc
 
     repositories.delete_document(session, document_id)
+    # Corpus changed: wipe the semantic answer cache (hygiene; the
+    # fingerprint check is what actually invalidates stale entries).
+    invalidate_answer_cache()
 
     try:
         storage.delete(document_id, f".{record.file_type}")

@@ -79,6 +79,22 @@ JSON object and no surrounding prose: {"query": "<standalone query>"}
 
 _REWRITE_MAX_CHARS = 500
 
+# Multi-query expansion: alternative phrasings of a standalone query, fused
+# into retrieval so a chunk matched by several phrasings outranks a
+# single-phrasing hit. Like REWRITE_SYSTEM it is a convenience call:
+# expand_query returns [] on any failure and retrieval simply proceeds with
+# the original query. JSON mode matches _complete's response_format.
+EXPANSION_SYSTEM = """\
+Rewrite the search query below as {count} alternative search queries with \
+different wording that a document retrieval engine could match against the \
+same information. Vary synonyms, phrasing, and specificity, but do not add \
+information that is not implied by the original query. Keep each query under \
+30 words. Respond with a single JSON object and no surrounding prose: \
+{{"variants": ["<query>", ...]}} \
+"""
+
+_EXPANSION_MAX_CHARS = 500
+
 
 class _ModelOutput(BaseModel):
     answer: str = Field(min_length=1)
@@ -186,6 +202,30 @@ def _parse_rewrite(content: str) -> str | None:
     return query.strip() if isinstance(query, str) and query.strip() else None
 
 
+def _parse_variants(content: str) -> list[str]:
+    """Leniently extract {"variants": [...]}: cleaned strings, capped later.
+
+    Returns [] whenever the output is unusable (bad JSON, wrong shape, no
+    non-blank strings); the caller degrades to the original query only.
+    """
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.removeprefix("json")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("variants")
+    if not isinstance(raw, list):
+        return []
+    return [
+        item.strip() for item in raw if isinstance(item, str) and item.strip()
+    ]
+
+
 def _excerpt(text: str) -> str:
     if len(text) <= _EXCERPT_CHARS:
         return text
@@ -239,6 +279,10 @@ class Generator:
         self._rewrite_tokens_in = 0
         self._rewrite_tokens_out = 0
         self._rewrite_elapsed_ms = 0.0
+        # Expansion-call usage (observability; separate from answer tokens).
+        self._expansion_tokens_in = 0
+        self._expansion_tokens_out = 0
+        self._expansion_elapsed_ms = 0.0
 
     @property
     def model(self) -> str:
@@ -256,6 +300,15 @@ class Generator:
             self._rewrite_tokens_in,
             self._rewrite_tokens_out,
             self._rewrite_elapsed_ms,
+        )
+
+    @property
+    def expansion_tokens(self) -> tuple[int, int, float]:
+        """(tokens_in, tokens_out, last_elapsed_ms) spent on query expansions."""
+        return (
+            self._expansion_tokens_in,
+            self._expansion_tokens_out,
+            self._expansion_elapsed_ms,
         )
 
     def rewrite_query(
@@ -297,6 +350,54 @@ class Generator:
             return question
         logger.info("Query rewritten: %r -> %r", question[:60], query[:60])
         return query
+
+    def expand_query(self, question: str, count: int = 2) -> list[str]:
+        """Generate alternative phrasings of a standalone query (multi-query).
+
+        Returns up to `count` distinct variants (never including the
+        original) for retrieval to fuse with it. Like rewrite_query this is
+        a convenience call: on any failure, unusable output, or count < 1 it
+        returns [] and retrieval proceeds with the original query only - it
+        must never break the request.
+        """
+        if count < 1:
+            return []
+        messages = [
+            {"role": "system", "content": EXPANSION_SYSTEM.format(count=count)},
+            {"role": "user", "content": f"Query: {question}"},
+        ]
+        started = time.perf_counter()
+        try:
+            content, tokens_in, tokens_out = self._complete(messages)
+            self._expansion_tokens_in += tokens_in
+            self._expansion_tokens_out += tokens_out
+        except Exception:  # noqa: BLE001 - convenience call, never break a request
+            logger.warning("Query expansion failed; using the original query only")
+            return []
+        finally:
+            self._expansion_elapsed_ms = (time.perf_counter() - started) * 1000
+
+        variants: list[str] = []
+        seen = {question.strip().casefold()}
+        for variant in _parse_variants(content):
+            if len(variant) > _EXPANSION_MAX_CHARS:
+                continue
+            key = variant.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            variants.append(variant)
+            if len(variants) >= count:
+                break
+        if variants:
+            logger.info(
+                "Query expanded: %r -> %r", question[:60], [v[:40] for v in variants]
+            )
+        else:
+            logger.warning(
+                "Query expansion output unusable; using the original query only"
+            )
+        return variants
 
     def generate(
         self,

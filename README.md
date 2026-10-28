@@ -58,6 +58,11 @@ Copy-Item .env.example .env
 | `CHAT_TEMPERATURE` | Sampling temperature (default `0.0`) |
 | `CHAT_HISTORY_TURNS` | Prior turns replayed into the prompt on `conversation_id` requests (default `4`; `0` disables history) |
 | `CHAT_QUERY_REWRITE` | Rewrite follow-up questions into a standalone retrieval query when history exists (default `true`; stateless questions are never rewritten) |
+| `CHAT_CACHE_ENABLED` | Semantic answer cache: an embedding-similar question is answered from cache (default `false` — off until eval-validated) |
+| `CHAT_CACHE_MIN_SIMILARITY` | Cosine similarity needed for a cache hit (default `0.97`) |
+| `CHAT_CACHE_MAX_AGE_HOURS` | Cached answers older than this are ignored and pruned (default `24`) |
+| `CHAT_QUERY_EXPANSION` | Multi-query expansion: rephrase the query into variants and fuse all rankings (default `false` — off until eval-validated) |
+| `CHAT_QUERY_EXPANSION_VARIANTS` | Expansion variants per query when enabled (default `2`; `1`–`5`) |
 | `RATE_LIMIT_PER_MINUTE` | Per-IP cap on `/chat` + `/retrieve` (default `60`; `0` disables) |
 | `API_KEY` | When set, `/documents`, `/retrieve`, `/chat` require this key (unset = open) |
 | `LOG_FILE` | Rotating application log file (default `data/logs/oraculum.log`; set empty to disable) |
@@ -239,7 +244,7 @@ as Server-Sent Events:
 
 | Event | Payload | Meaning |
 |---|---|---|
-| `meta` | `model`, `retrieval_ms`, `rewritten`, `has_evidence` | Retrieval finished; the UI can react before any text exists |
+| `meta` | `model`, `retrieval_ms`, `rewritten`, `expanded`, `has_evidence`, `cached` | Retrieval finished; the UI can react before any text exists |
 | `delta` | `{"text": ...}` | Incremental answer text, decoded from the model's JSON `answer` field |
 | `done` | full `ChatResponse` | **Authoritative** — validated citations, status, timings, `conversation_id`, `message_id` |
 | `error` | `{"message": ...}` | Generation failed mid-stream (mirrors the plain endpoint's 503) |
@@ -271,6 +276,43 @@ active thumb again does the same. Votes live in `chat_messages.feedback`
 fingerprint — a wrong scope gets 404, never a probe oracle. `GET
 /conversations/{id}` returns `feedback` per message so threads reload with
 their votes intact. `scripts/export_feedback.py` dumps votes for analysis.
+
+### Semantic answer cache + multi-query expansion (post-freeze, opt-in)
+
+Two flag-gated additions after the Phase 6 baseline freeze. **Both default
+off**; with the defaults the chat path is byte-identical to the frozen
+baseline and `evals/results/latest.json` reproduces exactly (verified —
+r@3=1.0, r@5=1.0, MRR=0.984, no-answer max top-1=0.033 both with the
+defaults and with `CHAT_QUERY_EXPANSION=true`, which was neutral on the
+retrieval eval, so the flag stays off until a dataset shows a win).
+
+**Semantic answer cache (`CHAT_CACHE_ENABLED`, default `false`).** A second
+collection in the same on-disk Chroma instance (`chat_cache`) keys answered
+responses by question embedding. A request whose embedding is at least
+`CHAT_CACHE_MIN_SIMILARITY` (default 0.97) cosine-similar to a cached one —
+within `CHAT_CACHE_MAX_AGE_HOURS` (default 24), same corpus fingerprint,
+same document filter, same model — is answered with **no retrieval and no
+LLM call** (`cached: true`, `cache_similarity` in the response; one `delta`
+then `done` on the stream). Correctness rests on the corpus fingerprint
+(sha256 over every document row's id, content hash, and status): any
+ingest or delete makes every older entry unreachable, and the wipe on
+those paths is hygiene. Refusals are never cached; cached exchanges are
+still persisted to the conversation; every cache failure (probe, lookup,
+store) degrades to the normal answer path, never fails the request. The
+probe's embedding is reused as the retrieval vector when the query isn't
+rewritten, so a miss pays one extra API call at most.
+
+**Multi-query expansion (`CHAT_QUERY_EXPANSION`, default `false`).** The
+standalone retrieval query (after any follow-up rewrite; stateless
+questions included) is rephrased into `CHAT_QUERY_EXPANSION_VARIANTS`
+(default 2) variants; original + variants are embedded in one batch,
+searched on both the vector store and BM25, and every ranking is fused
+with the existing RRF — so a chunk matched by several phrasings outranks a
+single-phrasing hit. Like the rewrite, it's best-effort: any failure
+returns no variants and retrieval proceeds with the original query only.
+The stream's `meta` event reports the variant count as `expanded`.
+
+Reranking and an LLM-as-judge eval scorer remain deferred (see ROADMAP).
 
 ### Reliability and security (Phase 5)
 

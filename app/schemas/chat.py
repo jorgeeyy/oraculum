@@ -68,6 +68,12 @@ class ChatResponse(BaseModel):
     # Set alongside conversation_id: the assistant message row, so the client
     # can attach 👍/👎 feedback to this exact answer.
     message_id: str | None = None
+    # Semantic answer cache (off by default): True when this answer was
+    # served from cache instead of being generated.
+    cached: bool = False
+    # Cosine similarity between the served question and the cached one;
+    # only meaningful when cached=True.
+    cache_similarity: float | None = None
 
 
 class FeedbackRequest(BaseModel):

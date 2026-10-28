@@ -17,6 +17,7 @@ from app.config import Settings, get_settings
 from app.db import repositories
 from app.db.models import Document
 from app.db.session import get_engine
+from app.services.answer_cache import invalidate_answer_cache
 from app.services.bm25_index import Bm25Index, get_bm25_index
 from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
@@ -236,6 +237,9 @@ def _ingest(
             chunk_size_tokens=settings.chunk_size_tokens,
             chunk_overlap_tokens=settings.chunk_overlap_tokens,
         )
+        # Corpus changed: wipe the semantic answer cache (hygiene; the
+        # fingerprint check is what actually invalidates stale entries).
+        invalidate_answer_cache()
         logger.info(
             "Ingested and indexed document %s (%s, %d bytes, %d chunks)",
             document_id,

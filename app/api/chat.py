@@ -1,7 +1,9 @@
 import json
 import logging
+import time
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -20,6 +22,7 @@ from app.schemas.chat import (
     FeedbackResponse,
     Source,
 )
+from app.services.answer_cache import AnswerCache, CacheHit, get_answer_cache
 from app.services.bm25_index import Bm25Index, get_bm25_index
 from app.services.embeddings import Embedder
 from app.services.errors import (
@@ -32,7 +35,7 @@ from app.services.errors import (
 from app.services.generation import INSUFFICIENT_ANSWER, Generator
 from app.services.openai_client import get_openai_client
 from app.services.rate_limit import enforce_rate_limit
-from app.services.retrieval import EmptyQuestionError, retrieve_documents
+from app.services.retrieval import EmptyQuestionError, RetrievalOutcome, retrieve_documents
 from app.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -65,6 +68,55 @@ def get_generator(settings: Settings = Depends(get_settings)) -> Generator:
         )
     except GenerationNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def get_answer_cache_dep(settings: Settings = Depends(get_settings)) -> AnswerCache | None:
+    """Answer cache when the flag is on, else None (the feature is opt-in).
+
+    Fails open: a cache that cannot be opened disables caching for the
+    request rather than failing it.
+    """
+    if not settings.chat_cache_enabled:
+        return None
+    try:
+        return get_answer_cache()
+    except Exception:
+        logger.warning("Answer cache unavailable; proceeding without it", exc_info=True)
+        return None
+
+
+def _corpus_fingerprint() -> str:
+    """Hash of the current corpus; ties cached answers to the evidence they used."""
+    session = open_db_session()
+    try:
+        return repositories.corpus_fingerprint(session)
+    finally:
+        session.close()
+
+
+@dataclass(frozen=True)
+class AnswerCacheContext:
+    """Cache handle plus the request-scoped facts a store call needs."""
+
+    cache: AnswerCache
+    fingerprint: str
+    query_vector: list[float]
+
+
+@dataclass(frozen=True)
+class PreparedChat:
+    """Shared pre-generation state for /chat and /chat/stream.
+
+    cache_hit short-circuits both endpoints: when set, retrieval never ran
+    and the answer comes from the cache entry instead of the LLM.
+    """
+
+    retrieval: RetrievalOutcome
+    history: list[dict] | None
+    rewritten: bool
+    expanded: int = 0
+    cache_hit: CacheHit | None = None
+    cache_context: AnswerCacheContext | None = None
 
 
 def _conversation_title(question: str) -> str:
@@ -132,13 +184,16 @@ def _prepare_chat(
     bm25: Bm25Index,
     generator: Generator,
     settings: Settings,
-):
+    cache: AnswerCache | None = None,
+) -> PreparedChat:
     """Shared pre-generation phase for /chat and /chat/stream.
 
-    Resolves top_k, loads conversation history (early 404), rewrites the
-    follow-up into a standalone query when history exists, and retrieves.
-    Returns (retrieval, history, rewritten). Raises HTTPException on the
-    same conditions as the plain endpoint.
+    Resolves top_k, loads conversation history (early 404), probes the
+    semantic answer cache on the raw question (a hit short-circuits
+    everything downstream), rewrites the follow-up into a standalone query
+    when history exists, expands it into variants when enabled, and
+    retrieves. Raises HTTPException on the same conditions as the plain
+    endpoint. Every cache step fails open.
     """
     top_k = resolve_top_k(request.top_k, settings)
 
@@ -163,6 +218,52 @@ def _prepare_chat(
         if history is None:
             raise HTTPException(status_code=404, detail="Conversation not found.")
 
+    # Semantic cache probe: embed the RAW question once (reused for retrieval
+    # when the query is not rewritten) and look for a fresh, matching answered
+    # entry against the current corpus fingerprint.
+    cache_hit: CacheHit | None = None
+    cache_context: AnswerCacheContext | None = None
+    query_vector: list[float] | None = None
+    probe_ms = 0.0
+    if cache is not None:
+        probe_started = time.perf_counter()
+        try:
+            query_vector = embedder.embed([request.question])[0]
+            fingerprint = _corpus_fingerprint()
+            cache_hit = cache.lookup(
+                query_vector,
+                fingerprint,
+                document_id=request.document_id,
+                model=generator.model,
+                min_similarity=settings.chat_cache_min_similarity,
+                max_age_hours=settings.chat_cache_max_age_hours,
+            )
+            if cache_hit is None:
+                cache_context = AnswerCacheContext(
+                    cache=cache, fingerprint=fingerprint, query_vector=query_vector
+                )
+        except Exception:
+            logger.warning(
+                "Answer cache probe failed; continuing uncached", exc_info=True
+            )
+            cache_hit = None
+            cache_context = None
+        finally:
+            probe_ms = (time.perf_counter() - probe_started) * 1000
+
+    if cache_hit is not None:
+        logger.info(
+            "chat cache hit similarity=%.3f question=%r",
+            cache_hit.similarity,
+            request.question[:60],
+        )
+        return PreparedChat(
+            retrieval=RetrievalOutcome(results=[], elapsed_ms=probe_ms),
+            history=history,
+            rewritten=False,
+            cache_hit=cache_hit,
+        )
+
     # Follow-ups ("what about part-timers?") are rewritten into a standalone
     # query for retrieval only; the stored/displayed question stays raw.
     # Stateless requests have no history and are never rewritten.
@@ -171,6 +272,22 @@ def _prepare_chat(
     if history and settings.chat_query_rewrite:
         retrieval_query = generator.rewrite_query(request.question, history)
         rewritten = retrieval_query != request.question
+
+    # Multi-query expansion runs on the standalone query (after the rewrite)
+    # and applies to stateless questions too; [] on any failure.
+    expanded_variants: tuple[str, ...] = ()
+    if settings.chat_query_expansion:
+        expanded_variants = tuple(
+            generator.expand_query(
+                retrieval_query, settings.chat_query_expansion_variants
+            )
+        )
+
+    # Reuse the probe's embedding only when retrieval still targets the raw
+    # question; a rewritten query embeds itself inside retrieve_documents.
+    reusable_vector = (
+        query_vector if (query_vector is not None and not rewritten) else None
+    )
 
     try:
         retrieval = retrieve_documents(
@@ -182,6 +299,8 @@ def _prepare_chat(
             bm25=bm25,
             hybrid=settings.retrieval_hybrid,
             rrf_k=settings.retrieval_rrf_k,
+            variants=expanded_variants,
+            query_vector=reusable_vector,
         )
     except EmptyQuestionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -197,7 +316,87 @@ def _prepare_chat(
             status_code=503,
             detail={"message": "Vector search is unavailable. Try again."},
         ) from exc
-    return retrieval, history, rewritten
+    return PreparedChat(
+        retrieval=retrieval,
+        history=history,
+        rewritten=rewritten,
+        expanded=len(expanded_variants),
+        cache_context=cache_context,
+    )
+
+
+def _cached_response(
+    request: ChatRequest,
+    prepared: PreparedChat,
+    *,
+    settings: Settings,
+    generator: Generator,
+) -> ChatResponse:
+    """Serve a cache hit as a ChatResponse; the exchange is still persisted."""
+    hit = prepared.cache_hit
+    assert hit is not None  # caller-checked
+    saved = _persist_exchange(
+        settings,
+        request,
+        answer=hit.answer,
+        status=hit.status,
+        sources=hit.sources,
+        model=hit.model,
+        retrieval_ms=round(prepared.retrieval.elapsed_ms, 1),
+        generation_ms=0.0,
+    )
+    logger.info(
+        "chat status=%s cached=true similarity=%.3f sources=%d "
+        "retrieval_ms=%.0f question=%r",
+        hit.status,
+        hit.similarity,
+        len(hit.sources),
+        prepared.retrieval.elapsed_ms,
+        request.question[:60],
+    )
+    return ChatResponse(
+        question=request.question,
+        answer=hit.answer,
+        status=hit.status,
+        sources=hit.sources,
+        model=hit.model,
+        retrieval_ms=round(prepared.retrieval.elapsed_ms, 1),
+        generation_ms=0.0,
+        conversation_id=saved[0] if saved else None,
+        message_id=saved[1] if saved else None,
+        cached=True,
+        cache_similarity=round(hit.similarity, 4),
+    )
+
+
+def _store_in_cache(
+    prepared: PreparedChat,
+    request: ChatRequest,
+    *,
+    answer: str,
+    status: str,
+    sources: list[Source],
+    model: str,
+    settings: Settings,
+) -> None:
+    """Remember an answered response (never a refusal); fail-open."""
+    context = prepared.cache_context
+    if context is None or status != "answered":
+        return
+    try:
+        context.cache.store(
+            context.query_vector,
+            question=request.question,
+            answer=answer,
+            status=status,
+            sources=sources,
+            model=model,
+            fingerprint=context.fingerprint,
+            document_id=request.document_id,
+            max_age_hours=settings.chat_cache_max_age_hours,
+        )
+    except Exception:
+        logger.warning("Answer cache store failed", exc_info=True)
 
 
 @router.post("", response_model=ChatResponse, dependencies=[Depends(enforce_rate_limit)])
@@ -207,24 +406,32 @@ def chat(
     store: VectorStore = Depends(get_vector_store),
     bm25: Bm25Index = Depends(get_bm25_index),
     generator: Generator = Depends(get_generator),
+    cache: AnswerCache | None = Depends(get_answer_cache_dep),
     settings: Settings = Depends(get_settings),
 ) -> ChatResponse:
     """Answer a question from retrieved evidence with resolved citations.
 
-    Retrieval runs first; if nothing is found the answer is a refusal and the
-    LLM is never called. When evidence exists, the model must cite it, and
-    every citation is resolved against the real retrieved chunks - unknown
-    citations are dropped and uncited answers are downgraded to
-    insufficient_evidence.
+    A semantic-cache hit short-circuits retrieval and generation entirely.
+    Otherwise, retrieval runs first; if nothing is found the answer is a
+    refusal and the LLM is never called. When evidence exists, the model
+    must cite it, and every citation is resolved against the real retrieved
+    chunks - unknown citations are dropped and uncited answers are
+    downgraded to insufficient_evidence.
     """
-    retrieval, history, rewritten = _prepare_chat(
+    prepared = _prepare_chat(
         request,
         embedder=embedder,
         store=store,
         bm25=bm25,
         generator=generator,
         settings=settings,
+        cache=cache,
     )
+
+    if prepared.cache_hit is not None:
+        return _cached_response(request, prepared, settings=settings, generator=generator)
+
+    retrieval = prepared.retrieval
 
     # No evidence: refuse deterministically without spending an LLM call.
     if not retrieval.results:
@@ -251,7 +458,7 @@ def chat(
         )
 
     try:
-        outcome = generator.generate(request.question, retrieval.results, history)
+        outcome = generator.generate(request.question, retrieval.results, prepared.history)
     except GenerationNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except GenerationServiceError as exc:
@@ -264,7 +471,7 @@ def chat(
     logger.info(
         "chat status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f "
         "tokens_in=%d tokens_out=%d embed_retries=%d gen_retries=%d "
-        "rewritten=%s question=%r",
+        "rewritten=%s expanded=%d question=%r",
         outcome.status,
         len(outcome.sources),
         retrieval.elapsed_ms,
@@ -273,8 +480,18 @@ def chat(
         outcome.tokens_out,
         getattr(embedder, "retry_count", 0),
         getattr(generator, "retry_count", 0),
-        rewritten,
+        prepared.rewritten,
+        prepared.expanded,
         request.question[:60],
+    )
+    _store_in_cache(
+        prepared,
+        request,
+        answer=outcome.answer,
+        status=outcome.status,
+        sources=outcome.sources,
+        model=outcome.model,
+        settings=settings,
     )
     saved = _persist_exchange(
         settings,
@@ -306,19 +523,22 @@ def chat_stream(
     store: VectorStore = Depends(get_vector_store),
     bm25: Bm25Index = Depends(get_bm25_index),
     generator: Generator = Depends(get_generator),
+    cache: AnswerCache | None = Depends(get_answer_cache_dep),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     """Stream an answer as Server-Sent Events.
 
     Event protocol (each frame: `event: <type>` + single-line JSON `data`):
 
-    - `meta`  - retrieval finished; carries model + retrieval_ms so the UI
-      can react before any answer text exists.
+    - `meta`  - retrieval finished; carries model + retrieval_ms + the
+      cached/expanded flags so the UI can react before any answer text
+      exists.
     - `delta` - incremental answer text (extracted from the model's JSON
-      answer field; cosmetic only).
+      answer field; cosmetic only). A cache hit emits exactly one delta
+      carrying the whole answer.
     - `done`  - the authoritative ChatResponse payload (validated citations,
-      status, timings, conversation_id). Clients MUST replace any streamed
-      text with `done.answer`.
+      status, timings, conversation_id, cached). Clients MUST replace any
+      streamed text with `done.answer`.
     - `error` - generation failed mid-stream; mirrors the plain endpoint's
       503 detail.
 
@@ -326,14 +546,16 @@ def chat_stream(
     outage) still return normal HTTP status codes because they happen
     before the response starts.
     """
-    retrieval, history, rewritten = _prepare_chat(
+    prepared = _prepare_chat(
         request,
         embedder=embedder,
         store=store,
         bm25=bm25,
         generator=generator,
         settings=settings,
+        cache=cache,
     )
+    retrieval = prepared.retrieval
 
     def event_source() -> Iterator[str]:
         yield _sse(
@@ -341,10 +563,57 @@ def chat_stream(
             {
                 "model": generator.model,
                 "retrieval_ms": round(retrieval.elapsed_ms, 1),
-                "rewritten": rewritten,
-                "has_evidence": bool(retrieval.results),
+                "rewritten": prepared.rewritten,
+                "expanded": prepared.expanded,
+                "has_evidence": (
+                    bool(prepared.cache_hit.sources)
+                    if prepared.cache_hit is not None
+                    else bool(retrieval.results)
+                ),
+                "cached": prepared.cache_hit is not None,
             },
         )
+
+        # Cache hit: replay the stored answer as one delta, then done.
+        if prepared.cache_hit is not None:
+            hit = prepared.cache_hit
+            saved = _persist_exchange(
+                settings,
+                request,
+                answer=hit.answer,
+                status=hit.status,
+                sources=hit.sources,
+                model=hit.model,
+                retrieval_ms=round(retrieval.elapsed_ms, 1),
+                generation_ms=0.0,
+            )
+            logger.info(
+                "chat(stream) status=%s cached=true similarity=%.3f sources=%d "
+                "retrieval_ms=%.0f question=%r",
+                hit.status,
+                hit.similarity,
+                len(hit.sources),
+                retrieval.elapsed_ms,
+                request.question[:60],
+            )
+            yield _sse("delta", {"text": hit.answer})
+            yield _sse(
+                "done",
+                ChatResponse(
+                    question=request.question,
+                    answer=hit.answer,
+                    status=hit.status,
+                    sources=hit.sources,
+                    model=hit.model,
+                    retrieval_ms=round(retrieval.elapsed_ms, 1),
+                    generation_ms=0.0,
+                    conversation_id=saved[0] if saved else None,
+                    message_id=saved[1] if saved else None,
+                    cached=True,
+                    cache_similarity=round(hit.similarity, 4),
+                ).model_dump(),
+            )
+            return
 
         # No evidence: refuse deterministically without spending an LLM call.
         if not retrieval.results:
@@ -377,7 +646,7 @@ def chat_stream(
         try:
             outcome = None
             for kind, payload in generator.generate_stream(
-                request.question, retrieval.results, history
+                request.question, retrieval.results, prepared.history
             ):
                 if kind == "delta":
                     yield _sse("delta", {"text": payload})
@@ -404,7 +673,7 @@ def chat_stream(
         logger.info(
             "chat(stream) status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f "
             "tokens_in=%d tokens_out=%d embed_retries=%d gen_retries=%d "
-            "rewritten=%s question=%r",
+            "rewritten=%s expanded=%d question=%r",
             outcome.status,
             len(outcome.sources),
             retrieval.elapsed_ms,
@@ -413,8 +682,18 @@ def chat_stream(
             outcome.tokens_out,
             getattr(embedder, "retry_count", 0),
             getattr(generator, "retry_count", 0),
-            rewritten,
+            prepared.rewritten,
+            prepared.expanded,
             request.question[:60],
+        )
+        _store_in_cache(
+            prepared,
+            request,
+            answer=outcome.answer,
+            status=outcome.status,
+            sources=outcome.sources,
+            model=outcome.model,
+            settings=settings,
         )
         saved = _persist_exchange(
             settings,

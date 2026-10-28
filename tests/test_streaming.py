@@ -424,7 +424,9 @@ class TestChatStreamEndpoint:
                 "model": fake_generator.model,
                 "retrieval_ms": follow_events[0][1]["retrieval_ms"],
                 "rewritten": True,
+                "expanded": 0,
                 "has_evidence": True,
+                "cached": False,
             },
         )
         assert fake_generator.rewrite_calls[-1]["question"] == "What about part-timers?"

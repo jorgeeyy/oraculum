@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timedelta
 
@@ -166,6 +167,26 @@ def fail_document(session: Session, document_id: str, message: str) -> None:
 def delete_document(session: Session, document_id: str) -> None:
     session.execute(delete(Document).where(Document.id == uuid.UUID(document_id)))
     session.commit()
+
+
+def corpus_fingerprint(session: Session) -> str:
+    """Hash over every document's identity, content, and lifecycle state.
+
+    Any change to any document row - ingest, delete, re-ingest, or a
+    pending -> processing -> completed / failed transition - alters the
+    fingerprint, which makes every semantic-cache answer recorded against
+    the previous corpus state unreachable. The ingest/delete cache wipe is
+    hygiene; this check is what guarantees a stale answer is never served.
+    """
+    rows = session.execute(
+        select(Document.id, Document.content_hash, Document.status)
+    ).all()
+    digest = hashlib.sha256()
+    for document_id, content_hash, status in sorted(
+        rows, key=lambda row: str(row[0])
+    ):
+        digest.update(f"{document_id}:{content_hash}:{status}".encode())
+    return digest.hexdigest()
 
 
 def _scope_clause(api_key_hash: str | None):
