@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.auth import api_key_fingerprint
+from app.api.auth import AuthActor, get_actor, scope_kwargs
 from app.api.deps import get_db_session, open_db_session
 from app.api.documents import get_embedder
 from app.api.retrieve import resolve_top_k
@@ -131,6 +131,7 @@ def _persist_exchange(
     settings: Settings,
     request: ChatRequest,
     *,
+    actor: AuthActor,
     answer: str,
     status: str,
     sources: list[Source],
@@ -142,26 +143,37 @@ def _persist_exchange(
 
     The session opens only here so stateless /chat requests never touch the
     database. Returns (conversation_id, message_id) when the request opted
-    into persistence, otherwise None (still stateless).
+    into persistence, otherwise None (still stateless). Session-mode chats
+    are stamped with the owning user; key-mode chats resolve the admin
+    service account for attribution (still DB work only at persist time).
     """
     if "conversation_id" not in request.model_fields_set:
         return None
-    owner = api_key_fingerprint(settings)
+    scope = scope_kwargs(actor)
     conversation_id = request.conversation_id
     session = open_db_session()
     try:
         if conversation_id is not None:
             existing = repositories.get_conversation(
-                session, conversation_id, api_key_hash=owner
+                session, conversation_id, **scope
             )
             if existing is None:
                 raise HTTPException(status_code=404, detail="Conversation not found.")
+        if actor.mode == "session":
+            owner_user_id = actor.user_id
+        elif actor.mode == "api_key":
+            admin = repositories.ensure_service_admin(
+                session, api_key_hash=actor.api_key_hash
+            )
+            owner_user_id = admin.id if admin is not None else None
+        else:
+            owner_user_id = None
         try:
             return repositories.save_chat_exchange(
                 session,
                 conversation_id=conversation_id,
                 title=_conversation_title(request.question),
-                api_key_hash=owner,
+                api_key_hash=scope["api_key_hash"],
                 question=request.question,
                 answer=answer,
                 status=status,
@@ -169,6 +181,7 @@ def _persist_exchange(
                 model=model,
                 retrieval_ms=retrieval_ms,
                 generation_ms=generation_ms,
+                user_id=owner_user_id,
             )
         except LookupError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found.") from exc
@@ -184,6 +197,7 @@ def _prepare_chat(
     bm25: Bm25Index,
     generator: Generator,
     settings: Settings,
+    actor: AuthActor,
     cache: AnswerCache | None = None,
 ) -> PreparedChat:
     """Shared pre-generation phase for /chat and /chat/stream.
@@ -210,8 +224,8 @@ def _prepare_chat(
             history = repositories.load_chat_history(
                 session,
                 request.conversation_id,
-                api_key_hash=api_key_fingerprint(settings),
                 limit=settings.chat_history_turns * 2,
+                **scope_kwargs(actor),
             )
         finally:
             session.close()
@@ -331,6 +345,7 @@ def _cached_response(
     *,
     settings: Settings,
     generator: Generator,
+    actor: AuthActor,
 ) -> ChatResponse:
     """Serve a cache hit as a ChatResponse; the exchange is still persisted."""
     hit = prepared.cache_hit
@@ -338,6 +353,7 @@ def _cached_response(
     saved = _persist_exchange(
         settings,
         request,
+        actor=actor,
         answer=hit.answer,
         status=hit.status,
         sources=hit.sources,
@@ -407,6 +423,7 @@ def chat(
     bm25: Bm25Index = Depends(get_bm25_index),
     generator: Generator = Depends(get_generator),
     cache: AnswerCache | None = Depends(get_answer_cache_dep),
+    actor: AuthActor = Depends(get_actor),
     settings: Settings = Depends(get_settings),
 ) -> ChatResponse:
     """Answer a question from retrieved evidence with resolved citations.
@@ -425,11 +442,14 @@ def chat(
         bm25=bm25,
         generator=generator,
         settings=settings,
+        actor=actor,
         cache=cache,
     )
 
     if prepared.cache_hit is not None:
-        return _cached_response(request, prepared, settings=settings, generator=generator)
+        return _cached_response(
+            request, prepared, settings=settings, generator=generator, actor=actor
+        )
 
     retrieval = prepared.retrieval
 
@@ -438,6 +458,7 @@ def chat(
         saved = _persist_exchange(
             settings,
             request,
+            actor=actor,
             answer=INSUFFICIENT_ANSWER,
             status="insufficient_evidence",
             sources=[],
@@ -496,6 +517,7 @@ def chat(
     saved = _persist_exchange(
         settings,
         request,
+        actor=actor,
         answer=outcome.answer,
         status=outcome.status,
         sources=outcome.sources,
@@ -524,6 +546,7 @@ def chat_stream(
     bm25: Bm25Index = Depends(get_bm25_index),
     generator: Generator = Depends(get_generator),
     cache: AnswerCache | None = Depends(get_answer_cache_dep),
+    actor: AuthActor = Depends(get_actor),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
     """Stream an answer as Server-Sent Events.
@@ -553,6 +576,7 @@ def chat_stream(
         bm25=bm25,
         generator=generator,
         settings=settings,
+        actor=actor,
         cache=cache,
     )
     retrieval = prepared.retrieval
@@ -580,6 +604,7 @@ def chat_stream(
             saved = _persist_exchange(
                 settings,
                 request,
+                actor=actor,
                 answer=hit.answer,
                 status=hit.status,
                 sources=hit.sources,
@@ -620,6 +645,7 @@ def chat_stream(
             saved = _persist_exchange(
                 settings,
                 request,
+                actor=actor,
                 answer=INSUFFICIENT_ANSWER,
                 status="insufficient_evidence",
                 sources=[],
@@ -698,6 +724,7 @@ def chat_stream(
         saved = _persist_exchange(
             settings,
             request,
+            actor=actor,
             answer=outcome.answer,
             status=outcome.status,
             sources=outcome.sources,
@@ -740,21 +767,22 @@ def chat_stream(
 def set_message_feedback(
     message_id: uuid.UUID,
     payload: FeedbackRequest,
-    settings: Settings = Depends(get_settings),
+    actor: AuthActor = Depends(get_actor),
     session: Session = Depends(get_db_session),
 ) -> FeedbackResponse:
     """Set or clear 👍/👎 feedback on one assistant answer.
 
     Rating "up"/"down" records the vote, null clears it (toggle off). The
-    message must belong to a conversation in this API-key scope, otherwise
-    404 - feedback can never probe whether a message id exists elsewhere.
+    message must belong to a conversation in this actor's scope (owning
+    user in session mode, API-key fingerprint otherwise), otherwise 404 -
+    feedback can never probe whether a message id exists elsewhere.
     """
     rating = payload.rating
     found, stored = repositories.set_message_feedback(
         session,
         str(message_id),
-        api_key_hash=api_key_fingerprint(settings),
         rating=rating,
+        **scope_kwargs(actor),
     )
     if not found:
         raise HTTPException(status_code=404, detail="Message not found.")

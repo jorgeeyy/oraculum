@@ -1,11 +1,11 @@
 import hashlib
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models import ChatMessage, Conversation, Document
+from app.db.models import ChatMessage, Conversation, Document, User, UserSession
 from app.schemas.chat import Source
 from app.schemas.conversations import (
     ConversationDetail,
@@ -189,16 +189,40 @@ def corpus_fingerprint(session: Session) -> str:
     return digest.hexdigest()
 
 
-def _scope_clause(api_key_hash: str | None):
+def _scope_clause(api_key_hash: str | None, owner_user_id: uuid.UUID | None = None):
+    """Ownership filter for conversation queries.
+
+    Session-mode callers pass owner_user_id and match by owning user;
+    key/local-mode callers pass the api_key_hash fingerprint (None = the
+    single local scope) exactly as before identity existed.
+    """
+    if owner_user_id is not None:
+        return Conversation.user_id == owner_user_id
     if api_key_hash is None:
         return Conversation.api_key_hash.is_(None)
     return Conversation.api_key_hash == api_key_hash
 
 
+def _owns(
+    conversation: Conversation,
+    *,
+    api_key_hash: str | None,
+    owner_user_id: uuid.UUID | None,
+) -> bool:
+    """Per-row ownership check mirroring _scope_clause."""
+    if owner_user_id is not None:
+        return conversation.user_id == owner_user_id
+    return conversation.api_key_hash == api_key_hash
+
+
 def create_conversation(
-    session: Session, *, title: str, api_key_hash: str | None
+    session: Session,
+    *,
+    title: str,
+    api_key_hash: str | None,
+    user_id: uuid.UUID | None = None,
 ) -> str:
-    conversation = Conversation(title=title, api_key_hash=api_key_hash)
+    conversation = Conversation(title=title, api_key_hash=api_key_hash, user_id=user_id)
     session.add(conversation)
     session.commit()
     session.refresh(conversation)
@@ -206,12 +230,15 @@ def create_conversation(
 
 
 def list_conversations(
-    session: Session, *, api_key_hash: str | None
+    session: Session,
+    *,
+    api_key_hash: str | None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> list[ConversationSummary]:
     rows = session.execute(
         select(Conversation, func.count(ChatMessage.id))
         .outerjoin(ChatMessage, ChatMessage.conversation_id == Conversation.id)
-        .where(_scope_clause(api_key_hash))
+        .where(_scope_clause(api_key_hash, owner_user_id))
         .group_by(Conversation.id)
         .order_by(Conversation.updated_at.desc(), Conversation.created_at.desc())
     ).all()
@@ -233,16 +260,19 @@ def load_chat_history(
     *,
     api_key_hash: str | None,
     limit: int,
+    owner_user_id: uuid.UUID | None = None,
 ) -> list[dict] | None:
     """Recent chat turns for prompt context, oldest first.
 
-    Returns None when the conversation is absent or owned by another key
-    (caller decides on 404); an empty list means "exists but no usable
-    history". Only role/content are loaded - sources and timings are not
-    needed to build context.
+    Returns None when the conversation is absent or owned by another
+    key/user (caller decides on 404); an empty list means "exists but no
+    usable history". Only role/content are loaded - sources and timings
+    are not needed to build context.
     """
     conversation = session.get(Conversation, uuid.UUID(conversation_id))
-    if conversation is None or conversation.api_key_hash != api_key_hash:
+    if conversation is None or not _owns(
+        conversation, api_key_hash=api_key_hash, owner_user_id=owner_user_id
+    ):
         return None
     if limit <= 0:
         return []
@@ -261,11 +291,17 @@ def load_chat_history(
 
 
 def get_conversation(
-    session: Session, conversation_id: str, *, api_key_hash: str | None
+    session: Session,
+    conversation_id: str,
+    *,
+    api_key_hash: str | None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> ConversationDetail | None:
     """Return the conversation with its messages, or None if absent/out of scope."""
     conversation = session.get(Conversation, uuid.UUID(conversation_id))
-    if conversation is None or conversation.api_key_hash != api_key_hash:
+    if conversation is None or not _owns(
+        conversation, api_key_hash=api_key_hash, owner_user_id=owner_user_id
+    ):
         return None
     messages = session.scalars(
         select(ChatMessage)
@@ -282,11 +318,19 @@ def get_conversation(
 
 
 def rename_conversation(
-    session: Session, conversation_id: str, title: str, *, api_key_hash: str | None
+    session: Session,
+    conversation_id: str,
+    title: str,
+    *,
+    api_key_hash: str | None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> bool:
     result = session.execute(
         update(Conversation)
-        .where(Conversation.id == uuid.UUID(conversation_id), _scope_clause(api_key_hash))
+        .where(
+            Conversation.id == uuid.UUID(conversation_id),
+            _scope_clause(api_key_hash, owner_user_id),
+        )
         .values(title=title)
     )
     session.commit()
@@ -294,11 +338,17 @@ def rename_conversation(
 
 
 def get_conversation_summary(
-    session: Session, conversation_id: str, *, api_key_hash: str | None
+    session: Session,
+    conversation_id: str,
+    *,
+    api_key_hash: str | None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> ConversationSummary:
     """Summary row for one in-scope conversation (assumes it exists)."""
     conversation = session.get(Conversation, uuid.UUID(conversation_id))
-    assert conversation is not None
+    assert conversation is not None and _owns(
+        conversation, api_key_hash=api_key_hash, owner_user_id=owner_user_id
+    )
     count = session.scalar(
         select(func.count(ChatMessage.id)).where(
             ChatMessage.conversation_id == conversation.id
@@ -314,12 +364,18 @@ def get_conversation_summary(
 
 
 def delete_conversation(
-    session: Session, conversation_id: str, *, api_key_hash: str | None
+    session: Session,
+    conversation_id: str,
+    *,
+    api_key_hash: str | None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> bool:
     """Delete a conversation; its messages go with it (FK CASCADE)."""
     exists = session.scalars(
-        select(Conversation)
-        .where(Conversation.id == uuid.UUID(conversation_id), _scope_clause(api_key_hash))
+        select(Conversation).where(
+            Conversation.id == uuid.UUID(conversation_id),
+            _scope_clause(api_key_hash, owner_user_id),
+        )
     ).first()
     if exists is None:
         return False
@@ -390,13 +446,15 @@ def set_message_feedback(
     *,
     api_key_hash: str | None,
     rating: str | None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> tuple[bool, str | None]:
     """Set (or clear, rating=None) the 👍/👎 feedback on one assistant message.
 
-    Ownership follows the conversation's api_key_hash; only assistant
-    messages can carry feedback. Returns (found, new_rating): found is False
-    when the message is absent, not an answer, or out of scope (caller raises
-    404); new_rating is the stored value after the operation.
+    Ownership follows the conversation's owner (user id in session mode, the
+    api_key_hash fingerprint otherwise); only assistant messages can carry
+    feedback. Returns (found, new_rating): found is False when the message
+    is absent, not an answer, or out of scope (caller raises 404);
+    new_rating is the stored value after the operation.
     """
     try:
         parsed_id = uuid.UUID(message_id)
@@ -406,7 +464,9 @@ def set_message_feedback(
     if message is None or message.role != "assistant":
         return False, None
     conversation = session.get(Conversation, message.conversation_id)
-    if conversation is None or conversation.api_key_hash != api_key_hash:
+    if conversation is None or not _owns(
+        conversation, api_key_hash=api_key_hash, owner_user_id=owner_user_id
+    ):
         return False, None
     message.feedback = rating
     session.commit()
@@ -426,6 +486,7 @@ def save_chat_exchange(
     model: str,
     retrieval_ms: float,
     generation_ms: float,
+    user_id: uuid.UUID | None = None,
 ) -> tuple[str, str]:
     """Persist a user question + assistant answer as one transaction.
 
@@ -435,7 +496,9 @@ def save_chat_exchange(
     message id for per-answer feedback.
     """
     if conversation_id is None:
-        conversation = Conversation(title=title, api_key_hash=api_key_hash)
+        conversation = Conversation(
+            title=title, api_key_hash=api_key_hash, user_id=user_id
+        )
         session.add(conversation)
         session.flush()
     else:
@@ -473,3 +536,147 @@ def save_chat_exchange(
     result = (str(conversation.id), str(answer_message.id))
     session.commit()
     return result
+
+
+# ----------------------------------------------------------------- users
+
+# Fixed identity of the API-key service account (the admin credential).
+# It has no password and can never log in; requests carrying the configured
+# API_KEY act as this account for attribution and dashboard purposes.
+SERVICE_ADMIN_EMAIL = "admin@service.local"
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().casefold()
+
+
+def create_user(
+    session: Session,
+    *,
+    email: str,
+    password_hash: str | None,
+    display_name: str | None = None,
+    role: str = "user",
+) -> str:
+    user = User(
+        email=normalize_email(email),
+        password_hash=password_hash,
+        display_name=display_name,
+        role=role,
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return str(user.id)
+
+
+def get_user_by_email(session: Session, email: str) -> User | None:
+    return session.scalar(select(User).where(User.email == normalize_email(email)))
+
+
+def get_user(session: Session, user_id: uuid.UUID) -> User | None:
+    return session.get(User, user_id)
+
+
+def count_users(session: Session) -> int:
+    return session.scalar(select(func.count(User.id))) or 0
+
+
+def touch_last_login(session: Session, user_id: uuid.UUID) -> None:
+    user = session.get(User, user_id)
+    if user is not None:
+        user.last_login_at = datetime.now(timezone.utc)
+        session.commit()
+
+
+def adopt_conversations(
+    session: Session, *, api_key_hash: str | None, user_id: uuid.UUID
+) -> int:
+    """Stamp unowned conversations in one scope as owned by user_id.
+
+    Used when an admin account is created so pre-identity chat history
+    (scoped by fingerprint, or the single local scope) becomes visible to
+    the admin's logged-in session. Rows already owned are never touched.
+    """
+    scope = (
+        Conversation.api_key_hash.is_(None)
+        if api_key_hash is None
+        else Conversation.api_key_hash == api_key_hash
+    )
+    result = session.execute(
+        update(Conversation)
+        .where(scope, Conversation.user_id.is_(None))
+        .values(user_id=user_id)
+    )
+    session.commit()
+    return result.rowcount or 0
+
+
+def ensure_service_admin(
+    session: Session, *, api_key_hash: str | None = None
+) -> User | None:
+    """Get-or-create the admin service account backing the API_KEY.
+
+    On first creation it adopts the conversations already scoped to the
+    given fingerprint so the admin's session shows pre-identity history.
+    Returns None when api_key_hash is None (local scope has no service
+    account to attribute to).
+    """
+    if api_key_hash is None:
+        return None
+    user = get_user_by_email(session, SERVICE_ADMIN_EMAIL)
+    if user is not None:
+        return user
+    user_id = create_user(
+        session, email=SERVICE_ADMIN_EMAIL, password_hash=None, role="admin"
+    )
+    adopt_conversations(session, api_key_hash=api_key_hash, user_id=uuid.UUID(user_id))
+    return get_user(session, uuid.UUID(user_id))
+
+
+# -------------------------------------------------------------- sessions
+
+def create_session(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    token_hash: str,
+    expires_at: datetime,
+    ip: str | None = None,
+    user_agent: str | None = None,
+) -> str:
+    row = UserSession(
+        user_id=user_id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+        ip=ip,
+        user_agent=user_agent,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return str(row.id)
+
+
+def get_session_by_token(session: Session, token_hash: str) -> UserSession | None:
+    return session.scalar(
+        select(UserSession).where(UserSession.token_hash == token_hash)
+    )
+
+
+def revoke_session(session: Session, token_hash: str) -> bool:
+    """Revoke one session; False when absent or already revoked."""
+    row = get_session_by_token(session, token_hash)
+    if row is None or row.revoked_at is not None:
+        return False
+    row.revoked_at = datetime.now(timezone.utc)
+    session.commit()
+    return True
+
+
+def touch_session_expiry(session: Session, session_id: uuid.UUID, expires_at: datetime) -> None:
+    """Sliding renewal: extend a live session's expiry."""
+    row = session.get(UserSession, session_id)
+    if row is not None:
+        row.expires_at = expires_at
+        session.commit()

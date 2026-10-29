@@ -228,6 +228,9 @@ def client(
     app.dependency_overrides[get_generator] = lambda: fake_generator
     app.dependency_overrides[get_bm25_index] = lambda: fake_bm25
     app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
+    # Same rule as the settings factory below: never inherit the semantic
+    # cache flag from the developer's .env; cache tests opt in explicitly.
+    app.dependency_overrides[get_settings] = lambda: Settings(chat_cache_enabled=False)
     with TestClient(app) as test_client:
         test_client.storage = storage  # type: ignore[attr-defined]
         yield test_client
@@ -252,7 +255,15 @@ def client_with_settings(
         app.dependency_overrides[get_generator] = lambda: fake_generator
         app.dependency_overrides[get_bm25_index] = lambda: fake_bm25
         app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
-        merged = get_settings().model_dump() | settings_overrides
+        # The semantic cache is ALWAYS off unless a test opts in explicitly:
+        # it must never be inherited from the developer's .env, or a flag
+        # flipped for live use would silently change embed-batch shapes and
+        # short-circuit retrieval underneath unrelated tests.
+        merged = (
+            get_settings().model_dump()
+            | {"chat_cache_enabled": False}
+            | settings_overrides
+        )
         app.dependency_overrides[get_settings] = lambda: Settings(**merged)
         return TestClient(app)
 
@@ -280,7 +291,7 @@ def db_conn() -> Iterator:
 
     from sqlalchemy import select
 
-    from app.db.models import ChatMessage, Conversation, Document
+    from app.db.models import ChatMessage, Conversation, Document, User, UserSession
 
     with engine.connect() as conn:
         existing_ids = set(
@@ -289,6 +300,8 @@ def db_conn() -> Iterator:
         existing_conversation_ids = set(
             conn.execute(select(Conversation.id)).scalars()
         )
+        existing_user_ids = set(conn.execute(select(User.id)).scalars())
+        existing_session_ids = set(conn.execute(select(UserSession.id)).scalars())
 
     yield engine
 
@@ -313,4 +326,14 @@ def db_conn() -> Iterator:
         else:
             conn.execute(delete(ChatMessage))
             conn.execute(delete(Conversation))
+        # Identity rows created by tests (register/login flows). Deleting a
+        # user releases any conversation it adopted via ON DELETE SET NULL.
+        if existing_session_ids:
+            conn.execute(delete(UserSession).where(UserSession.id.not_in(existing_session_ids)))
+        else:
+            conn.execute(delete(UserSession))
+        if existing_user_ids:
+            conn.execute(delete(User).where(User.id.not_in(existing_user_ids)))
+        else:
+            conn.execute(delete(User))
     engine.dispose()

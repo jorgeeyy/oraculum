@@ -8,9 +8,14 @@ store (e.g. Redis) behind the same dependency interface.
 import threading
 import time
 
+from typing import TYPE_CHECKING
+
 from fastapi import Depends, HTTPException, Request
 
 from app.config import Settings, get_settings
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.api.auth import AuthActor
 
 _WINDOW_SECONDS = 60.0
 
@@ -49,7 +54,15 @@ def enforce_rate_limit(
 ) -> None:
     if settings.rate_limit_per_minute <= 0:
         return
-    key = request.client.host if request.client else "unknown"
+    # Authenticated session users get their own bucket (one noisy user can't
+    # exhaust everyone else's); API-key and local requests stay per-IP, which
+    # keeps the pre-identity behavior byte-for-byte. `get_actor` stores the
+    # resolved actor on request.state; when auth never ran, fall back to IP.
+    actor: AuthActor | None = getattr(request.state, "actor", None)
+    if actor is not None and actor.mode == "session" and actor.user_id is not None:
+        key = f"user:{actor.user_id}"
+    else:
+        key = request.client.host if request.client else "unknown"
     if not limiter.allow(key, settings.rate_limit_per_minute):
         raise HTTPException(
             status_code=429,

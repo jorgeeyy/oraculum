@@ -210,8 +210,11 @@ class TestRetrieveWithVariants:
 
 class TestExpansionEndpoint:
     def test_expansion_off_by_default(
-        self, client, fake_embedder, fake_vector_store, fake_generator
+        self, client_with_settings, fake_embedder, fake_vector_store, fake_generator
     ) -> None:
+        # Both flags pinned: the test proves the BEHAVIOR when expansion is
+        # off, regardless of what the developer's .env has flipped on.
+        client = client_with_settings(chat_query_expansion=False)
         fake_vector_store.query_result = [STORE_HIT]
         response = client.post("/chat", json={"question": "How many days?"})
         assert response.status_code == 200
