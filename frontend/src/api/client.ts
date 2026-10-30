@@ -1,12 +1,19 @@
 // Fetch wrapper: request IDs, optional API key, typed HTTP errors.
 
 import type {
+  AdminOverview,
+  AdminUser,
+  AdminUsage,
+  AuditEvent,
+  AuthConfigResponse,
+  AuthUser,
   ChatRequest,
   ChatResponse,
   ConversationDetail,
   ConversationSummary,
   DocumentContentResponse,
   DocumentRecord,
+  FeedbackItem,
   FeedbackRating,
   FeedbackResponse,
   ReadyResponse,
@@ -27,6 +34,26 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+// ------------------------------------------------- unauthorized subscribers
+
+type UnauthorizedHandler = () => void;
+
+const unauthorizedHandlers = new Set<UnauthorizedHandler>();
+
+/**
+ * Subscribe to mid-session 401s (expired/revoked session, key removed).
+ * The auth guard clears the user so its redirect kicks in; WS-8 toasts can
+ * subscribe too. Returns an unsubscribe function.
+ */
+export function onUnauthorized(handler: UnauthorizedHandler): () => void {
+  unauthorizedHandlers.add(handler);
+  return () => void unauthorizedHandlers.delete(handler);
+}
+
+function notifyUnauthorized(): void {
+  for (const handler of unauthorizedHandlers) handler();
 }
 
 const API_KEY_STORAGE = "rag.apiKey";
@@ -125,13 +152,19 @@ export async function apiFetch<T>(
   }
 
   if (!response.ok) {
-    throw await errorFromResponse(response);
+    const error = await errorFromResponse(response);
+    if (response.status === 401) notifyUnauthorized();
+    throw error;
   }
   return (await response.json()) as T;
 }
 
 function post<T>(path: string, body: unknown): Promise<T> {
   return apiFetch<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+function patch<T>(path: string, body: unknown): Promise<T> {
+  return apiFetch<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 }
 
 // ------------------------------------------------------------- SSE parsing
@@ -210,7 +243,11 @@ export async function chatStream(
   } catch {
     throw new ApiError(0, "Cannot reach the server. Is it running?");
   }
-  if (!response.ok) throw await errorFromResponse(response);
+  if (!response.ok) {
+    const error = await errorFromResponse(response);
+    if (response.status === 401) notifyUnauthorized();
+    throw error;
+  }
   if (!response.body) {
     throw new ApiError(0, "This browser cannot stream responses.");
   }
@@ -257,6 +294,33 @@ export async function chatStream(
 }
 
 export const api = {
+  // ---------------------------------------------------------- identity
+  authConfig: () => apiFetch<AuthConfigResponse>("/auth/config"),
+  me: () => apiFetch<AuthUser>("/auth/me"),
+  login: (email: string, password: string) =>
+    post<AuthUser>("/auth/login", { email, password }),
+  register: (email: string, password: string) =>
+    post<AuthUser>("/auth/register", { email, password }),
+  logout: () => post<{ logged_out: boolean }>("/auth/logout", {}),
+  // -------------------------------------------------------------- admin
+  adminOverview: () => apiFetch<AdminOverview>("/admin/overview"),
+  adminUsers: () => apiFetch<AdminUser[]>("/admin/users"),
+  adminPatchUser: (
+    userId: string,
+    changes: { role?: "admin" | "user"; is_active?: boolean },
+  ) => patch<AdminUser>(`/admin/users/${userId}`, changes),
+  adminResetPassword: (userId: string) =>
+    post<{ user_id: string; sessions_revoked: number }>(
+      `/admin/users/${userId}/password-reset`,
+      {},
+    ),
+  adminUsage: (days = 14) => apiFetch<AdminUsage>(`/admin/usage?days=${days}`),
+  adminFeedback: (rating?: "up" | "down") =>
+    apiFetch<FeedbackItem[]>(
+      `/admin/feedback${rating ? `?rating=${rating}` : ""}`,
+    ),
+  adminAudit: (limit = 100) => apiFetch<AuditEvent[]>(`/admin/audit?limit=${limit}`),
+  // ------------------------------------------------------------- chat
   chat: (req: ChatRequest) => post<ChatResponse>("/chat", req),
   streamChat: (req: ChatRequest, handlers: ChatStreamHandlers = {}) =>
     chatStream(req, handlers),

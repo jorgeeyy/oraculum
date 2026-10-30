@@ -2,10 +2,17 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.db.models import ChatMessage, Conversation, Document, User, UserSession
+from app.db.models import (
+    AuditEvent,
+    ChatMessage,
+    Conversation,
+    Document,
+    User,
+    UserSession,
+)
 from app.schemas.chat import Source
 from app.schemas.conversations import (
     ConversationDetail,
@@ -13,6 +20,37 @@ from app.schemas.conversations import (
     MessageRecord,
 )
 from app.schemas.documents import DocumentRecord
+
+
+class _Unscoped:
+    """Sentinel value: skip the owner filter entirely (full corpus view)."""
+
+    def __repr__(self) -> str:
+        return "UNSCOPED"
+
+
+UNSCOPED = _Unscoped()
+
+# Owner scope for document queries: a user id (shared corpus + that user's
+# uploads), None (shared corpus only), or UNSCOPED (no filter at all).
+DocumentOwner = uuid.UUID | None | _Unscoped
+
+
+def _owner_clause(owner: DocumentOwner):
+    """SQLAlchemy filter for document visibility, or None when unscoped.
+
+    - UNSCOPED: no filter - admin sessions and API-key/curl callers see the
+      whole corpus (backwards compatible with pre-identity behavior).
+    - None: shared corpus only (owner IS NULL) - CLI/script ingestion and
+      pre-identity uploads.
+    - user id: the shared corpus PLUS that user's own uploads; another
+      user's private documents never match.
+    """
+    if isinstance(owner, _Unscoped):
+        return None
+    if owner is None:
+        return Document.owner_user_id.is_(None)
+    return or_(Document.owner_user_id.is_(None), Document.owner_user_id == owner)
 
 
 def _to_record(doc: Document) -> DocumentRecord:
@@ -44,7 +82,9 @@ def create_document(
     file_type: str,
     size_bytes: int,
     content_hash: str | None = None,
+    owner_user_id: uuid.UUID | None = None,
 ) -> None:
+    """Insert a document row. `owner_user_id=None` leaves it shared."""
     session.add(
         Document(
             id=uuid.UUID(document_id),
@@ -52,50 +92,108 @@ def create_document(
             file_type=file_type,
             size_bytes=size_bytes,
             content_hash=content_hash,
+            owner_user_id=owner_user_id,
         )
     )
     session.commit()
 
 
-def find_by_content_hash(session: Session, content_hash: str) -> DocumentRecord | None:
+def find_by_content_hash(
+    session: Session, content_hash: str, *, owner: DocumentOwner = UNSCOPED
+) -> DocumentRecord | None:
     """Return the newest active document with this content hash, if any.
 
     Completed documents short-circuit as duplicates; pending/processing ones
     short-circuit as "still being indexed" so a re-upload never starts a
     second ingestion of the same bytes. Failed documents are excluded so the
     same bytes stay retryable.
+
+    Scoped by owner: a user re-uploading bytes that only ANOTHER user
+    already ingested gets their own document row, never the foreign one.
     """
+    stmt = select(Document).where(
+        Document.content_hash == content_hash,
+        Document.status.in_(["completed", "pending", "processing"]),
+    )
+    clause = _owner_clause(owner)
+    if clause is not None:
+        stmt = stmt.where(clause)
     doc = session.scalars(
-        select(Document)
-        .where(
-            Document.content_hash == content_hash,
-            Document.status.in_(["completed", "pending", "processing"]),
-        )
-        .order_by(Document.created_at.desc())
-        .limit(1)
+        stmt.order_by(Document.created_at.desc()).limit(1)
     ).first()
     return _to_record(doc) if doc else None
 
 
-def find_failed_by_content_hash(session: Session, content_hash: str) -> DocumentRecord | None:
+def find_failed_by_content_hash(
+    session: Session, content_hash: str, *, owner: DocumentOwner = UNSCOPED
+) -> DocumentRecord | None:
     """Return the newest failed document with this content hash, if any."""
+    stmt = select(Document).where(
+        Document.content_hash == content_hash, Document.status == "failed"
+    )
+    clause = _owner_clause(owner)
+    if clause is not None:
+        stmt = stmt.where(clause)
     doc = session.scalars(
-        select(Document)
-        .where(Document.content_hash == content_hash, Document.status == "failed")
-        .order_by(Document.created_at.desc())
-        .limit(1)
+        stmt.order_by(Document.created_at.desc()).limit(1)
     ).first()
     return _to_record(doc) if doc else None
 
 
-def list_documents(session: Session) -> list[DocumentRecord]:
-    docs = session.scalars(select(Document).order_by(Document.created_at.desc())).all()
+def list_documents(
+    session: Session, *, owner: DocumentOwner = UNSCOPED
+) -> list[DocumentRecord]:
+    stmt = select(Document)
+    clause = _owner_clause(owner)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    docs = session.scalars(stmt.order_by(Document.created_at.desc())).all()
     return [_to_record(doc) for doc in docs]
 
 
-def get_document(session: Session, document_id: str) -> DocumentRecord | None:
-    doc = session.get(Document, uuid.UUID(document_id))
+def get_document(
+    session: Session, document_id: str, *, owner: DocumentOwner = UNSCOPED
+) -> DocumentRecord | None:
+    """Fetch one document; None when it does not exist OR is out of scope
+    (a foreign private document is indistinguishable from a missing one)."""
+    clause = _owner_clause(owner)
+    if clause is None:
+        doc = session.get(Document, uuid.UUID(document_id))
+    else:
+        doc = session.scalars(
+            select(Document).where(clause, Document.id == uuid.UUID(document_id))
+        ).first()
     return _to_record(doc) if doc else None
+
+
+def visible_document_ids(
+    session: Session, *, owner: DocumentOwner
+) -> set[str] | None:
+    """Document ids this scope may retrieve from; None = unrestricted.
+
+    None (unscoped actors: API key, admin session) leaves every downstream
+    filter off, so scripts/evals/curl keep their exact pre-identity
+    behavior. An empty set means the caller can see nothing - retrieval
+    must return zero hits without querying the index.
+    """
+    clause = _owner_clause(owner)
+    if clause is None:
+        return None
+    return {
+        str(doc_id)
+        for doc_id in session.scalars(select(Document.id).where(clause)).all()
+    }
+
+
+def adopt_documents(session: Session, *, user_id: uuid.UUID) -> int:
+    """Hand every shared-corpus document (owner IS NULL) to a user."""
+    result = session.execute(
+        update(Document)
+        .where(Document.owner_user_id.is_(None))
+        .values(owner_user_id=user_id)
+    )
+    session.commit()
+    return result.rowcount or 0
 
 
 def mark_processing(session: Session, document_id: str) -> None:
@@ -164,8 +262,14 @@ def fail_document(session: Session, document_id: str, message: str) -> None:
     session.commit()
 
 
-def delete_document(session: Session, document_id: str) -> None:
-    session.execute(delete(Document).where(Document.id == uuid.UUID(document_id)))
+def delete_document(
+    session: Session, document_id: str, *, owner: DocumentOwner = UNSCOPED
+) -> None:
+    stmt = delete(Document).where(Document.id == uuid.UUID(document_id))
+    clause = _owner_clause(owner)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    session.execute(stmt)
     session.commit()
 
 
@@ -680,3 +784,119 @@ def touch_session_expiry(session: Session, session_id: uuid.UUID, expires_at: da
     if row is not None:
         row.expires_at = expires_at
         session.commit()
+
+
+# ------------------------------------------------------------- admin views
+
+def list_users(session: Session) -> list[User]:
+    """All accounts, oldest first (stable admin-listing order)."""
+    return list(
+        session.scalars(select(User).order_by(User.created_at, User.id)).all()
+    )
+
+
+def count_active_admins(session: Session, *, exclude_user_id: uuid.UUID | None = None) -> int:
+    """Active admin accounts, optionally ignoring one (last-admin guard)."""
+    stmt = select(func.count(User.id)).where(User.role == "admin", User.is_active.is_(True))
+    if exclude_user_id is not None:
+        stmt = stmt.where(User.id != exclude_user_id)
+    return session.scalar(stmt) or 0
+
+
+def update_user(
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    role: str | None = None,
+    is_active: bool | None = None,
+) -> User | None:
+    """Patch role/is_active; None when the user does not exist."""
+    user = session.get(User, user_id)
+    if user is None:
+        return None
+    if role is not None:
+        user.role = role
+    if is_active is not None:
+        user.is_active = is_active
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+def revoke_user_sessions(session: Session, user_id: uuid.UUID) -> int:
+    """Revoke every live session for a user (password reset / deactivation)."""
+    now = datetime.now(timezone.utc)
+    result = session.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    session.commit()
+    return result.rowcount or 0
+
+
+def usage_daily(session: Session, *, days: int) -> list[dict]:
+    """Assistant answers per UTC day, newest last (chat usage proxy).
+
+    Built over chat_messages because token/spend columns land with
+    usage_events in WS-5; the shape (day/count) is what the dashboard
+    chart consumes either way. Returns the most recent `days` buckets,
+    oldest first (chart order).
+    """
+    day = func.date_trunc("day", ChatMessage.created_at)
+    stmt = (
+        select(day, func.count(ChatMessage.id))
+        .where(ChatMessage.role == "assistant")
+        .group_by(day)
+        .order_by(day.desc())
+        .limit(days)
+    )
+    rows = list(session.execute(stmt).all())
+    rows.reverse()  # newest-window fetched desc; charts read ascending
+    return [
+        {
+            "day": bucket.strftime("%Y-%m-%d") if bucket else None,
+            "answers": count,
+        }
+        for bucket, count in rows
+    ]
+
+
+def usage_totals(session: Session) -> dict:
+    """Corpus-wide chat/feedback counters for the admin overview."""
+    answers = session.scalar(
+        select(func.count(ChatMessage.id)).where(ChatMessage.role == "assistant")
+    ) or 0
+    ups = session.scalar(
+        select(func.count(ChatMessage.id)).where(
+            ChatMessage.role == "assistant", ChatMessage.feedback == "up"
+        )
+    ) or 0
+    downs = session.scalar(
+        select(func.count(ChatMessage.id)).where(
+            ChatMessage.role == "assistant", ChatMessage.feedback == "down"
+        )
+    ) or 0
+    return {"answers": answers, "feedback_up": ups, "feedback_down": downs}
+
+
+def list_audit_events(session: Session, *, limit: int = 100) -> list[dict]:
+    """Most recent audit events, newest first."""
+    rows = session.scalars(
+        select(AuditEvent).order_by(AuditEvent.created_at.desc(), AuditEvent.id).limit(limit)
+    ).all()
+    return [
+        {
+            "id": str(row.id),
+            "actor_label": row.actor_label,
+            "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
+            "action": row.action,
+            "target_type": row.target_type,
+            "target_id": row.target_id,
+            "request_id": row.request_id,
+            "ip": row.ip,
+            "detail": row.detail,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]

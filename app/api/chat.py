@@ -9,7 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.auth import AuthActor, get_actor, scope_kwargs
+from app.api.auth import (
+    AuthActor,
+    answer_cache_owner_key,
+    document_owner_filter,
+    get_actor,
+    scope_kwargs,
+)
 from app.api.deps import get_db_session, open_db_session
 from app.api.documents import get_embedder
 from app.api.retrieve import resolve_top_k
@@ -101,6 +107,10 @@ class AnswerCacheContext:
     cache: AnswerCache
     fingerprint: str
     query_vector: list[float]
+    # Owner bucket (per-user for scoped callers, shared "" otherwise): the
+    # lookup and the later store must use the SAME key, so the answer a
+    # user receives is the one they (or an unscoped caller) stored.
+    owner_key: str
 
 
 @dataclass(frozen=True)
@@ -189,6 +199,35 @@ def _persist_exchange(
         session.close()
 
 
+def _visible_document_scope(
+    actor: AuthActor, requested_document_id: str | None
+) -> set[str] | None:
+    """Resolve retrieval scoping for this actor; 404 a foreign document_id.
+
+    Returns the set of document ids the actor may search (None =
+    unrestricted: API-key callers, admin sessions, and the opt-in local
+    scope - the pre-identity behavior, and DB-free like before). An
+    explicit request.document_id outside the actor's scope is reported as
+    missing - never as a permission hint - and checked before any cache
+    probe or retrieval spend.
+    """
+    owner = document_owner_filter(actor)
+    if owner is repositories.UNSCOPED and requested_document_id is None:
+        return None  # no scoping applies: zero DB traffic, as before
+    session = open_db_session()
+    try:
+        visible = repositories.visible_document_ids(session, owner=owner)
+        if requested_document_id is not None:
+            record = repositories.get_document(
+                session, requested_document_id, owner=owner
+            )
+            if record is None:
+                raise HTTPException(status_code=404, detail="Document not found.")
+    finally:
+        session.close()
+    return visible
+
+
 def _prepare_chat(
     request: ChatRequest,
     *,
@@ -210,6 +249,11 @@ def _prepare_chat(
     endpoint. Every cache step fails open.
     """
     top_k = resolve_top_k(request.top_k, settings)
+
+    # Document scoping: resolve what this actor may search, and 404 an
+    # out-of-scope document_id BEFORE the cache probe - a foreign id must
+    # never surface a cached answer either.
+    visible_documents = _visible_document_scope(actor, request.document_id)
 
     # Multi-turn: load prior turns when the request targets an existing
     # conversation. Ownership is checked HERE (not only at persist time), so
@@ -241,12 +285,14 @@ def _prepare_chat(
     probe_ms = 0.0
     if cache is not None:
         probe_started = time.perf_counter()
+        owner_key = answer_cache_owner_key(actor)
         try:
             query_vector = embedder.embed([request.question])[0]
             fingerprint = _corpus_fingerprint()
             cache_hit = cache.lookup(
                 query_vector,
                 fingerprint,
+                owner_key=owner_key,
                 document_id=request.document_id,
                 model=generator.model,
                 min_similarity=settings.chat_cache_min_similarity,
@@ -254,7 +300,10 @@ def _prepare_chat(
             )
             if cache_hit is None:
                 cache_context = AnswerCacheContext(
-                    cache=cache, fingerprint=fingerprint, query_vector=query_vector
+                    cache=cache,
+                    fingerprint=fingerprint,
+                    query_vector=query_vector,
+                    owner_key=owner_key,
                 )
         except Exception:
             logger.warning(
@@ -310,6 +359,7 @@ def _prepare_chat(
             store=store,
             top_k=top_k,
             document_id=request.document_id,
+            allowed_document_ids=visible_documents,
             bm25=bm25,
             hybrid=settings.retrieval_hybrid,
             rrf_k=settings.retrieval_rrf_k,
@@ -408,6 +458,7 @@ def _store_in_cache(
             sources=sources,
             model=model,
             fingerprint=context.fingerprint,
+            owner_key=context.owner_key,
             document_id=request.document_id,
             max_age_hours=settings.chat_cache_max_age_hours,
         )

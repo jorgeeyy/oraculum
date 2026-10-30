@@ -2,10 +2,16 @@
 
 A question whose embedding is at least `min_similarity` cosine-similar to a
 cached one - within `max_age_hours`, recorded against the same corpus
-fingerprint, document filter, and model - is answered straight from the
-cache: no retrieval, no LLM call. Only "answered" responses are ever stored;
-refusals cost nothing to regenerate and caching them could hide newly
-indexed evidence.
+fingerprint, owner bucket, document filter, and model - is answered straight
+from the cache: no retrieval, no LLM call. Only "answered" responses are
+ever stored; refusals cost nothing to regenerate and caching them could
+hide newly indexed evidence.
+
+The owner bucket (`owner_key`) is the privacy boundary: a regular user's
+cached answer - which embeds evidence from their private documents - is
+only ever served back to that same user. Unscoped callers (admin session,
+API key, local mode) share one bucket; entries written before the field
+existed never match (treated as misses).
 
 Correctness rests on the corpus fingerprint (sha256 over every document's
 id, content hash, and status): any ingest, delete, or lifecycle change makes
@@ -75,6 +81,7 @@ class AnswerCache:
         vector: Sequence[float],
         fingerprint: str,
         *,
+        owner_key: str,
         document_id: str | None = None,
         model: str,
         min_similarity: float,
@@ -83,8 +90,11 @@ class AnswerCache:
         """Return the nearest matching cached answer, or None.
 
         The where-filter pins the entry to the same corpus fingerprint,
-        document filter, and model; similarity and age are checked in
-        Python. Any failure logs and returns None (fail-open).
+        owner bucket, document filter, and model; similarity and age are
+        checked in Python. `owner_key` is what keeps one user's cached
+        answer (with its citations) from ever being served to another -
+        entries predating the field simply never match. Any failure logs
+        and returns None (fail-open).
         """
         try:
             if self._collection.count() == 0:
@@ -95,6 +105,7 @@ class AnswerCache:
                 where={
                     "$and": [
                         {"fingerprint": {"$eq": fingerprint}},
+                        {"owner_key": {"$eq": owner_key}},
                         {"document_id": {"$eq": document_id or ""}},
                         {"model": {"$eq": model}},
                     ]
@@ -145,22 +156,25 @@ class AnswerCache:
         sources: Sequence[Source],
         model: str,
         fingerprint: str,
+        owner_key: str,
         document_id: str | None = None,
         max_age_hours: float,
     ) -> None:
         """Cache an answered response keyed by the question embedding.
 
         Refusals are never stored. The entry id hashes the question within
-        its (document, model) scope, so re-asking refreshes the entry in
-        place (a corpus change lands on the same id and overwrites the
-        stale answer). Expired entries are pruned opportunistically.
+        its (owner, document, model) scope, so re-asking refreshes the
+        entry in place (a corpus change lands on the same id and overwrites
+        the stale answer) while two users asking the same question keep
+        independent entries. Expired entries are pruned opportunistically.
         Fail-open.
         """
         if status != "answered":
             return
         try:
             entry_id = hashlib.sha256(
-                f"{document_id or ''}|{model}|{question.strip().casefold()}".encode()
+                f"{owner_key}|{document_id or ''}|{model}|"
+                f"{question.strip().casefold()}".encode()
             ).hexdigest()
             self._collection.upsert(
                 ids=[entry_id],
@@ -170,6 +184,7 @@ class AnswerCache:
                     {
                         "created_at": time.time(),
                         "fingerprint": fingerprint,
+                        "owner_key": owner_key,
                         "document_id": document_id or "",
                         "model": model,
                         "status": status,

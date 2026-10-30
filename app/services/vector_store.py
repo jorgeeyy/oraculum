@@ -137,9 +137,21 @@ class VectorStore:
         *,
         top_k: int = 5,
         document_id: str | None = None,
+        document_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Return nearest chunks as {id, score, text, metadata}; higher score is better."""
-        where = {"document_id": {"$eq": document_id}} if document_id else None
+        """Return nearest chunks as {id, score, text, metadata}; higher score is better.
+
+        `document_id` pins the search to one document; `document_ids`
+        restricts it to a visible set (per-user scoping). Callers guarantee
+        the set is non-empty; an explicit `document_id` wins when both are
+        given (membership was already validated upstream).
+        """
+        if document_id is not None:
+            where: dict[str, Any] | None = {"document_id": {"$eq": document_id}}
+        elif document_ids is not None:
+            where = {"document_id": {"$in": sorted(document_ids)}}
+        else:
+            where = None
         try:
             if self._collection.count() == 0:
                 return []

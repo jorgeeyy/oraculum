@@ -7,7 +7,7 @@ import type { DocumentContentResponse, DocumentRecord } from "../api/types";
 import UploadDropzone from "../components/UploadDropzone";
 
 interface Props {
-  onAskKey: () => void;
+  onAuthRequired: () => void;
   documents: DocumentRecord[];
   loading: boolean;
   loadError: string | null;
@@ -23,7 +23,7 @@ function renderMarkdown(text: string): string {
 }
 
 export default function Documents({
-  onAskKey,
+  onAuthRequired,
   documents,
   loading,
   loadError,
@@ -35,7 +35,7 @@ export default function Documents({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [needsKey, setNeedsKey] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [content, setContent] = useState<DocumentContentResponse | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
   const [contentError, setContentError] = useState<string | null>(null);
@@ -97,7 +97,7 @@ export default function Documents({
         else if (err.status === 413) setError(err.message);
         else if (err.status === 503) setError(`Indexing unavailable: ${err.message}`);
         else setError(err.message);
-        if (err.status === 401) setNeedsKey(true);
+        if (err.status === 401) setNeedsAuth(true);
       } else {
         setError("Upload failed.");
       }
@@ -201,12 +201,12 @@ export default function Documents({
         {bannerError && (
           <div className="mb-3 flex items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-600 dark:text-red-400">
             <span className="flex-1">{bannerError}</span>
-            {(needsKey || unauthorized) && (
+            {(needsAuth || unauthorized) && (
               <button
                 className="rounded-lg border border-red-500/40 px-2.5 py-1 text-xs font-medium hover:bg-red-500/15"
-                onClick={onAskKey}
+                onClick={onAuthRequired}
               >
-                Set API key
+                Sign in
               </button>
             )}
           </div>

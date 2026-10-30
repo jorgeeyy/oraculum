@@ -15,6 +15,31 @@ from app.services.retrieval import (
 
 DOC_ID = "11111111-2222-3333-4444-555555555555"
 
+
+def _seed_document(document_id: str = DOC_ID) -> None:
+    """Insert a real document row so document_id filtering validates.
+
+    Unknown document ids now 404 (indistinguishable from foreign ones), so
+    the filter-forwarding tests need an actual visible document. db_conn
+    removes the row at teardown.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.repositories import create_document
+    from app.db.session import get_engine
+
+    session = sessionmaker(bind=get_engine(), expire_on_commit=False)()
+    try:
+        create_document(
+            session,
+            document_id=document_id,
+            original_filename="handbook.md",
+            file_type="md",
+            size_bytes=10,
+        )
+    finally:
+        session.close()
+
 STORE_HIT = {
     "id": f"{DOC_ID}#0",
     "score": 0.71,
@@ -43,7 +68,6 @@ class TestRetrieveDocuments:
         outcome = retrieve_documents(
             "annual leave?", embedder=fake_embedder, store=fake_vector_store
         )
-
         assert len(outcome.results) == 1
         result = outcome.results[0]
         assert result.source_id == f"{DOC_ID}#0"
@@ -53,6 +77,24 @@ class TestRetrieveDocuments:
         assert result.chunk_index == 0
         assert result.score == pytest.approx(0.71)
         assert outcome.elapsed_ms >= 0
+
+    def test_empty_allowed_set_short_circuits_without_work(
+        self, fake_embedder, fake_vector_store, fake_bm25
+    ) -> None:
+        # A caller with zero visible documents must not embed, query the
+        # vector store, or touch the term index at all.
+        outcome = retrieve_documents(
+            "annual leave?",
+            embedder=fake_embedder,
+            store=fake_vector_store,
+            bm25=fake_bm25,
+            hybrid=True,
+            allowed_document_ids=set(),
+        )
+        assert outcome.results == []
+        assert fake_embedder.batches == []
+        assert fake_vector_store.queries == []
+        assert fake_bm25.searches == []
 
     def test_passes_top_k_and_document_filter(
         self, fake_embedder, fake_vector_store
@@ -146,8 +188,9 @@ class TestRetrieveEndpoint:
         assert result["score"] == pytest.approx(1 / 61)
 
     def test_filter_and_top_k_forwarded(
-        self, client: TestClient, fake_vector_store
+        self, client: TestClient, fake_vector_store, db_conn
     ) -> None:
+        _seed_document()
         response = client.post(
             "/retrieve",
             json={"question": "vpn", "top_k": 2, "document_id": DOC_ID},
@@ -196,15 +239,17 @@ class TestRetrieveEndpoint:
         response = client.post("/retrieve", json={"question": "vpn"})
         assert response.status_code == 503
 
-    def test_random_uuid_filter_returns_200_empty(
-        self, client: TestClient, fake_vector_store
+    def test_unknown_document_id_returns_404(
+        self, client: TestClient, fake_vector_store, db_conn
     ) -> None:
+        # Unknown and foreign document ids are indistinguishable (no
+        # existence leak) and are rejected before any embedding/index work.
         response = client.post(
             "/retrieve",
             json={"question": "vpn", "document_id": str(uuid.uuid4())},
         )
-        assert response.status_code == 200
-        assert response.json()["results"] == []
+        assert response.status_code == 404
+        assert fake_vector_store.queries == []
 
 
 class TestTopKResolution:

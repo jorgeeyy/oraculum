@@ -25,10 +25,16 @@ def _make_client(
     app.dependency_overrides[get_embedder] = lambda: fake_embedder
     app.dependency_overrides[get_vector_store] = lambda: fake_vector_store
     app.dependency_overrides[get_generator] = lambda: fake_generator
+    # Always pin: never inherit the dev .env's cache flag, and keep the
+    # suite's pre-login request style (login-required default is covered
+    # by dedicated identity tests with auth_allow_anonymous=False).
+    merged = get_settings().model_dump() | {
+        "chat_cache_enabled": False,
+        "auth_allow_anonymous": True,
+    }
     if settings_overrides:
-        base = get_settings()
-        merged = base.model_dump() | settings_overrides
-        app.dependency_overrides[get_settings] = lambda: Settings(**merged)
+        merged = merged | settings_overrides
+    app.dependency_overrides[get_settings] = lambda: Settings(**merged)
     # One limiter instance shared by all requests; fresh per test app so
     # window state never leaks between tests.
     limiter = FixedWindowRateLimiter()

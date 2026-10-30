@@ -8,6 +8,31 @@ from app.services.generation import GenerationResult
 
 DOC_ID = "11111111-2222-3333-4444-555555555555"
 
+
+def _seed_document(document_id: str = DOC_ID) -> None:
+    """Insert a real document row so document_id filtering validates.
+
+    Unknown document ids now 404 (indistinguishable from foreign ones), so
+    the filter-forwarding test needs an actual visible document. db_conn
+    removes the row at teardown.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.repositories import create_document
+    from app.db.session import get_engine
+
+    session = sessionmaker(bind=get_engine(), expire_on_commit=False)()
+    try:
+        create_document(
+            session,
+            document_id=document_id,
+            original_filename="handbook.md",
+            file_type="md",
+            size_bytes=10,
+        )
+    finally:
+        session.close()
+
 STORE_HIT = {
     "id": f"{DOC_ID}#0",
     "score": 0.71,
@@ -91,8 +116,9 @@ class TestChatEndpoint:
         assert fake_generator.calls == []
 
     def test_filter_and_top_k_forwarded(
-        self, client: TestClient, fake_vector_store
+        self, client: TestClient, fake_vector_store, db_conn
     ) -> None:
+        _seed_document()
         client.post(
             "/chat",
             json={"question": "vpn", "top_k": 3, "document_id": DOC_ID},
@@ -149,13 +175,15 @@ class TestChatEndpoint:
         )
         assert response.status_code == 422
 
-    def test_random_uuid_filter_returns_insufficient(
-        self, client: TestClient, fake_vector_store, fake_generator
+    def test_unknown_document_id_returns_404(
+        self, client: TestClient, fake_vector_store, fake_generator, db_conn
     ) -> None:
+        # Unknown and foreign document ids are indistinguishable, and the
+        # rejection happens BEFORE the cache probe or any retrieval spend.
         response = client.post(
             "/chat",
             json={"question": "leave?", "document_id": str(uuid.uuid4())},
         )
-        assert response.status_code == 200
-        assert response.json()["status"] == "insufficient_evidence"
+        assert response.status_code == 404
         assert fake_generator.calls == []
+        assert fake_vector_store.queries == []

@@ -14,6 +14,12 @@ from fastapi import (
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.auth import (
+    AuthActor,
+    document_owner_filter,
+    document_owner_id,
+    get_actor,
+)
 from app.api.deps import get_db_session
 from app.config import Settings, get_settings
 from app.db import repositories
@@ -98,12 +104,18 @@ async def upload_document(
     embedder: Embedder = Depends(get_embedder),
     store: VectorStore = Depends(get_vector_store),
     session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
 ) -> UploadDocumentResponse:
     """Accept a file and queue background ingestion.
 
     Validation (type/size) is synchronous; extraction, embedding, and vector
     indexing run after the response so a large upload never blocks the app.
     The returned record is `pending`; poll GET /documents for progress.
+
+    Uploads are private to the account that made them (owner stamped at
+    creation); API-key/local callers land in the shared corpus. Dedup is
+    owner-scoped, so identical bytes uploaded by two users produce one
+    document row each - never a reference to the other user's document.
     """
     data = await _read_bounded(file, settings.max_file_size_bytes)
     filename = file.filename or ""
@@ -122,9 +134,11 @@ async def upload_document(
 
     # Idempotent ingestion: identical bytes already completed -> duplicate;
     # identical bytes still cooking -> "already being indexed". Either way
-    # no second record or job is created.
+    # no second record or job is created. Both lookups are owner-scoped:
+    # bytes that only ANOTHER user ingested are a fresh upload for us.
     content_hash = hashlib.sha256(data).hexdigest()
-    existing = repositories.find_by_content_hash(session, content_hash)
+    owner = document_owner_filter(actor)
+    existing = repositories.find_by_content_hash(session, content_hash, owner=owner)
     if existing is not None:
         logger.info(
             "Duplicate upload of %r (hash=%s...) -> existing document %s (%s)",
@@ -137,7 +151,7 @@ async def upload_document(
         return UploadDocumentResponse(**existing.model_dump(), chunks=[])
 
     # Same bytes as a previously failed document -> retry in place.
-    failed = repositories.find_failed_by_content_hash(session, content_hash)
+    failed = repositories.find_failed_by_content_hash(session, content_hash, owner=owner)
     if failed is not None:
         repositories.reopen_document(
             session,
@@ -153,7 +167,7 @@ async def upload_document(
             store=store,
             storage=storage,
         )
-        record = repositories.get_document(session, failed.id)
+        record = repositories.get_document(session, failed.id, owner=owner)
         return UploadDocumentResponse(**record.model_dump(), chunks=[])
 
     document_id = storage.save(data, extension)
@@ -165,6 +179,7 @@ async def upload_document(
             file_type=extension.lstrip("."),
             size_bytes=len(data),
             content_hash=content_hash,
+            owner_user_id=document_owner_id(actor),
         )
     except SQLAlchemyError:
         storage.delete(document_id, extension)
@@ -191,16 +206,26 @@ async def upload_document(
 
 
 @router.get("", response_model=list[DocumentRecord])
-def list_documents(session: Session = Depends(get_db_session)) -> list[DocumentRecord]:
-    return repositories.list_documents(session)
+def list_documents(
+    session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
+) -> list[DocumentRecord]:
+    """List visible documents: shared corpus + the caller's own uploads."""
+    return repositories.list_documents(
+        session, owner=document_owner_filter(actor)
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentRecord)
 def get_document(
-    document_id: str, session: Session = Depends(get_db_session)
+    document_id: str,
+    session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
 ) -> DocumentRecord:
     document_id = _parse_document_id(document_id)
-    record = repositories.get_document(session, document_id)
+    record = repositories.get_document(
+        session, document_id, owner=document_owner_filter(actor)
+    )
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     return record
@@ -212,9 +237,12 @@ def get_document_chunks(
     storage: DocumentStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
     session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
 ) -> ChunksResponse:
     document_id = _parse_document_id(document_id)
-    record = repositories.get_document(session, document_id)
+    record = repositories.get_document(
+        session, document_id, owner=document_owner_filter(actor)
+    )
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
 
@@ -250,10 +278,13 @@ def get_document_content(
     document_id: str,
     storage: DocumentStorage = Depends(get_storage),
     session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
 ) -> DocumentContentResponse:
     """Return the document's full extracted text (no chunking)."""
     document_id = _parse_document_id(document_id)
-    record = repositories.get_document(session, document_id)
+    record = repositories.get_document(
+        session, document_id, owner=document_owner_filter(actor)
+    )
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
 
@@ -295,10 +326,13 @@ def get_document_file(
     document_id: str,
     storage: DocumentStorage = Depends(get_storage),
     session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
 ) -> Response:
     """Serve the stored file's raw bytes (e.g. for an in-browser PDF view)."""
     document_id = _parse_document_id(document_id)
-    record = repositories.get_document(session, document_id)
+    record = repositories.get_document(
+        session, document_id, owner=document_owner_filter(actor)
+    )
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
 
@@ -330,9 +364,11 @@ def delete_document(
     store: VectorStore = Depends(get_vector_store),
     bm25: Bm25Index = Depends(get_bm25_index),
     session: Session = Depends(get_db_session),
+    actor: AuthActor = Depends(get_actor),
 ) -> DeleteResponse:
     document_id = _parse_document_id(document_id)
-    record = repositories.get_document(session, document_id)
+    owner = document_owner_filter(actor)
+    record = repositories.get_document(session, document_id, owner=owner)
     if record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
 
@@ -365,7 +401,7 @@ def delete_document(
             ),
         ) from exc
 
-    repositories.delete_document(session, document_id)
+    repositories.delete_document(session, document_id, owner=owner)
     # Corpus changed: wipe the semantic answer cache (hygiene; the
     # fingerprint check is what actually invalidates stale entries).
     invalidate_answer_cache()

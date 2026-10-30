@@ -148,3 +148,81 @@ export interface RetrievalRequest {
   top_k?: number;
   document_id?: string;
 }
+
+// -------------------------------------------------------------- identity
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: "admin" | "user";
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface AuthConfigResponse {
+  auth_required: boolean;
+  registration_enabled: boolean;
+}
+
+// ----------------------------------------------------------------- admin
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: "admin" | "user";
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface AdminOverview {
+  version: string;
+  git_commit: string | null;
+  documents: number;
+  chunks: number | null;
+  conversations: number;
+  messages: number;
+  users: number;
+  active_admins: number;
+  chat_cache_enabled: boolean;
+}
+
+export interface UsageDay {
+  day: string | null;
+  answers: number;
+}
+
+export interface AdminUsage {
+  days: number;
+  daily: UsageDay[];
+  totals: {
+    answers: number;
+    feedback_up: number;
+    feedback_down: number;
+  };
+}
+
+export interface FeedbackItem {
+  message_id: string;
+  conversation_id: string;
+  feedback: "up" | "down";
+  status: string | null;
+  model: string | null;
+  created_at: string;
+  answer: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  actor_label: string;
+  actor_user_id: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  request_id: string | null;
+  ip: string | null;
+  detail: Record<string, unknown> | null;
+  created_at: string;
+}

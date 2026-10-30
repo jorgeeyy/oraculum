@@ -1,10 +1,12 @@
 """Semantic answer cache tests (flag-gated, off by default).
 
 Covers the cache's own matching rules (cosine threshold, staleness,
-fingerprint/document/model scoping, refusal skip) against real Chroma in a
-temp dir, plus the /chat and /chat/stream wiring (miss -> hit skips the LLM,
-stream hit replays one delta, cached answers still persist). The cache probe
-must never break a request: every failure degrades to the normal path.
+fingerprint/owner-bucket/document/model scoping, refusal skip) against real
+Chroma in a temp dir, plus the /chat and /chat/stream wiring (miss -> hit
+skips the LLM, stream hit replays one delta, cached answers still persist).
+The owner bucket is the privacy boundary: one user's cached answer is never
+served to another (per-user buckets; unscoped callers share one). The cache
+probe must never break a request: every failure degrades to the normal path.
 """
 
 import time
@@ -52,6 +54,7 @@ def _store(
     vector,
     *,
     fingerprint="fp",
+    owner_key="",
     document_id=None,
     model="m",
     answer="20 days.",
@@ -65,6 +68,7 @@ def _store(
         sources=[_source()],
         model=model,
         fingerprint=fingerprint,
+        owner_key=owner_key,
         document_id=document_id,
         max_age_hours=max_age_hours,
     )
@@ -75,6 +79,7 @@ def _lookup(
     vector,
     *,
     fingerprint="fp",
+    owner_key="",
     document_id=None,
     model="m",
     min_similarity=0.97,
@@ -83,11 +88,21 @@ def _lookup(
     return cache.lookup(
         vector,
         fingerprint,
+        owner_key=owner_key,
         document_id=document_id,
         model=model,
         min_similarity=min_similarity,
         max_age_hours=max_age_hours,
     )
+
+
+def _register(client, email: str) -> None:
+    """Create an account and leave the client signed in as that user."""
+    response = client.post(
+        "/auth/register",
+        json={"email": email, "password": "correct-horse-battery"},
+    )
+    assert response.status_code == 201, response.text
 
 
 @pytest.fixture()
@@ -157,6 +172,31 @@ class TestAnswerCacheUnit:
         _store(cache, [1.0, 0.0, 0.0], model="gpt-4o-mini")
         assert _lookup(cache, [1.0, 0.0, 0.0], model="gpt-4o") is None
 
+    def test_owner_bucket_mismatch_is_a_miss(self, cache) -> None:
+        _store(cache, [1.0, 0.0, 0.0], owner_key="user-a")
+        # Another user's (or anonymous) identical question must not see it.
+        assert _lookup(cache, [1.0, 0.0, 0.0], owner_key="user-b") is None
+        assert _lookup(cache, [1.0, 0.0, 0.0], owner_key="") is None
+        # The owning bucket still hits.
+        hit = _lookup(cache, [1.0, 0.0, 0.0], owner_key="user-a")
+        assert hit is not None
+        assert hit.answer == "20 days."
+
+    def test_same_question_in_two_buckets_stays_independent(self, cache) -> None:
+        # Entry ids hash the owner bucket: two users storing the identical
+        # question create separate entries and never overwrite each other.
+        _store(cache, [1.0, 0.0, 0.0], owner_key="user-a", answer="A's answer")
+        _store(cache, [1.0, 0.0, 0.0], owner_key="user-b", answer="B's answer")
+        assert cache._collection.count() == 2
+        assert (
+            _lookup(cache, [1.0, 0.0, 0.0], owner_key="user-a").answer
+            == "A's answer"
+        )
+        assert (
+            _lookup(cache, [1.0, 0.0, 0.0], owner_key="user-b").answer
+            == "B's answer"
+        )
+
     def test_refusal_is_never_stored(self, cache) -> None:
         cache.store(
             [1.0, 0.0, 0.0],
@@ -166,6 +206,7 @@ class TestAnswerCacheUnit:
             sources=[],
             model="m",
             fingerprint="fp",
+            owner_key="",
             document_id=None,
             max_age_hours=24.0,
         )
@@ -299,6 +340,76 @@ class TestCacheEndpoint:
         assert response.status_code == 200
         assert response.json()["cached"] is False
         assert response.json()["answer"] == fake_generator.result.answer
+
+
+    def test_cached_answer_is_never_served_across_users(
+        self, cache_client_factory, fake_vector_store, fake_generator, db_conn
+    ) -> None:
+        fake_vector_store.query_result = [STORE_HIT]
+
+        alice = cache_client_factory()
+        _register(alice, "cache-alice@local.dev")
+        first = alice.post("/chat", json={"question": "How many days?"})
+        assert first.json()["cached"] is False
+        assert len(fake_generator.calls) == 1
+
+        # Bob asks the IDENTICAL question: alice's cached answer (with her
+        # citations) must NOT be served - it is a fresh miss for him.
+        bob = cache_client_factory()
+        _register(bob, "cache-bob@local.dev")
+        bob_first = bob.post("/chat", json={"question": "How many days?"})
+        assert bob_first.json()["cached"] is False
+        assert len(fake_generator.calls) == 2
+
+        # Each user's own entry then hits (per-bucket entry ids: neither
+        # store overwrote the other).
+        bob_second = bob.post("/chat", json={"question": "How many days?"})
+        alice_second = alice.post("/chat", json={"question": "How many days?"})
+        assert bob_second.json()["cached"] is True
+        assert alice_second.json()["cached"] is True
+        assert len(fake_generator.calls) == 2
+
+    def test_unscoped_callers_share_one_bucket(
+        self, cache_client_factory, fake_vector_store, fake_generator, db_conn
+    ) -> None:
+        # The opt-in local scope answers and stores (bucket "")...
+        fake_vector_store.query_result = [STORE_HIT]
+        anonymous = cache_client_factory()
+        first = anonymous.post("/chat", json={"question": "How many days?"})
+        assert first.json()["cached"] is False
+        assert len(fake_generator.calls) == 1
+
+        # ...and an admin session - also unscoped (whole corpus) - reuses
+        # it: sharing among full-corpus callers leaks nothing.
+        admin = cache_client_factory()
+        _register(admin, "cache-boss@local.dev")
+        session = sessionmaker(bind=db_conn, expire_on_commit=False)()
+        try:
+            user = repositories.get_user_by_email(session, "cache-boss@local.dev")
+            assert user is not None
+            user.role = "admin"
+            session.commit()
+        finally:
+            session.close()
+        hit = admin.post("/chat", json={"question": "How many days?"})
+        assert hit.json()["cached"] is True
+        assert len(fake_generator.calls) == 1
+
+    def test_unscoped_entry_is_not_served_to_a_regular_user(
+        self, cache_client_factory, fake_vector_store, fake_generator, db_conn
+    ) -> None:
+        # The mirror of the test above: an entry stored by a full-corpus
+        # caller may cite anything, so a regular user never receives it.
+        fake_vector_store.query_result = [STORE_HIT]
+        anonymous = cache_client_factory()
+        anonymous.post("/chat", json={"question": "How many days?"})
+        assert len(fake_generator.calls) == 1
+
+        user = cache_client_factory()
+        _register(user, "cache-regular@local.dev")
+        fresh = user.post("/chat", json={"question": "How many days?"})
+        assert fresh.json()["cached"] is False
+        assert len(fake_generator.calls) == 2
 
 
 class TestCacheStream:

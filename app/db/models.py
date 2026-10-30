@@ -23,6 +23,12 @@ class Document(Base):
     content_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
+    # Owning user (NULL = shared corpus: CLI/script ingestion, pre-identity
+    # uploads). Users only ever see shared docs + their own; SET NULL keeps
+    # the corpus intact when an account is deleted.
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -119,3 +125,30 @@ class ChatMessage(Base):
     )
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class AuditEvent(Base):
+    """Append-only trail of admin/security-relevant actions.
+
+    Actor is denormalized (`actor_label`) so history survives user deletion;
+    `actor_user_id` is SET NULL for the same reason. Writes are fail-open —
+    a broken audit insert must never fail the user-facing mutation.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Email or "api-key"/"local" label at event time.
+    actor_label: Mapped[str] = mapped_column(String(320))
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    target_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

@@ -9,6 +9,9 @@ const API_PREFIXES = [
   "/retrieve",
   "/conversations",
   "/health",
+  "/auth",
+  "/admin",
+  "/usage",
 ];
 
 export default defineConfig({

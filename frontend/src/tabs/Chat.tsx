@@ -11,7 +11,7 @@ import EvidencePanel from "../components/EvidencePanel";
 import SourceCard from "../components/SourceCard";
 
 interface ChatProps {
-  onAskKey: () => void;
+  onAuthRequired: () => void;
   conversationId: string | null;
   onConversationCreated: (conversationId: string) => void;
 }
@@ -56,7 +56,7 @@ function toMessage(record: MessageRecord, conversationId: string | null): Messag
 }
 
 export default function Chat({
-  onAskKey,
+  onAuthRequired,
   conversationId,
   onConversationCreated,
 }: ChatProps) {
@@ -65,7 +65,7 @@ export default function Chat({
   const [busy, setBusy] = useState(false);
   const [loadingThread, setLoadingThread] = useState(conversationId !== null);
   const [error, setError] = useState<string | null>(null);
-  const [needsKey, setNeedsKey] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [evidence, setEvidence] = useState<Source | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -100,7 +100,7 @@ export default function Chat({
               : err.message
             : "Unexpected error.",
         );
-        if (err instanceof ApiError && err.status === 401) setNeedsKey(true);
+        if (err instanceof ApiError && err.status === 401) setNeedsAuth(true);
       } finally {
         if (!cancelled) setLoadingThread(false);
       }
@@ -135,7 +135,7 @@ export default function Chat({
     setInput("");
     setBusy(true);
     setError(null);
-    setNeedsKey(false);
+    setNeedsAuth(false);
     try {
       const response = await api.streamChat(
         { question, conversation_id: conversationId ?? null },
@@ -176,7 +176,7 @@ export default function Chat({
             : err.message
           : "Unexpected error.";
       setError(message);
-      if (err instanceof ApiError && err.status === 401) setNeedsKey(true);
+      if (err instanceof ApiError && err.status === 401) setNeedsAuth(true);
       // Roll back the optimistic user message, the partial answer, and
       // restore the input for editing.
       setMessages((prev) => prev.slice(0, -2));
@@ -217,12 +217,12 @@ export default function Chat({
         {error && (
         <div className="mx-auto mt-3 flex w-full max-w-3xl items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm text-red-600 dark:text-red-400">
           <span className="flex-1">{error}</span>
-          {needsKey && (
+          {needsAuth && (
             <button
               className="rounded-lg border border-red-500/40 px-2.5 py-1 text-xs font-medium hover:bg-red-500/15"
-              onClick={onAskKey}
+              onClick={onAuthRequired}
             >
-              Set API key
+              Sign in
             </button>
           )}
         </div>

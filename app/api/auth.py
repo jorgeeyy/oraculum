@@ -7,9 +7,13 @@ Two authentication modes share one resolver (`get_actor`):
   fingerprint exactly as before identity existed, so curl/evals/scripts are
   byte-for-byte compatible. This path is deliberately DB-free.
 - **Session cookie** — real user accounts (email + Argon2id password).
-  Scoped by owning user id. When `API_KEY` is unset (local development),
-  requests without a session behave exactly as before: the open, single
-  local scope, no login required.
+  Scoped by owning user id.
+
+Every human client logs in: with `API_KEY` set, a request needs a key or a
+session; without a key, a session is still required by default, because an
+anonymous caller could otherwise spend LLM tokens. `AUTH_ALLOW_ANONYMOUS=true`
+opts back into the old open single local scope (tests and offline tooling).
+The key-auth path stays DB-free either way.
 
 Sessions are opaque random tokens; only their SHA-256 is stored, cookies
 are HttpOnly + SameSite=Lax, and login is throttled per IP and per email.
@@ -23,13 +27,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
+from fastapi.security import APIKeyCookie, APIKeyHeader
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db_session, open_db_session
 from app.config import Settings, get_settings
 from app.db import repositories
-from app.schemas.auth import LoginRequest, RegisterRequest, UserOut
+from app.schemas.auth import AuthConfig, LoginRequest, RegisterRequest, UserOut
 from app.services.passwords import hash_password, verify_password
 from app.services.rate_limit import get_rate_limiter
 
@@ -37,7 +42,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# OpenAPI security schemes: they make Swagger's "Authorize" button supply the
+# X-API-Key header or the session cookie. Both are optional (auto_error=False)
+# because `get_actor` — not the scheme — decides what is required, keeping
+# 401 details and the open-local mode exactly as before.
+api_key_header_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+session_cookie_scheme = APIKeyCookie(
+    name=get_settings().auth_cookie_name, auto_error=False
+)
+
 _UNAUTHORIZED = "Invalid or missing API key."
+_SIGN_IN_REQUIRED = "Sign in required."
 
 
 def api_key_fingerprint(settings: Settings) -> str | None:
@@ -72,8 +87,53 @@ def scope_kwargs(actor: AuthActor) -> dict:
     return {"api_key_hash": actor.api_key_hash, "owner_user_id": None}
 
 
-def _provided_key(request: Request) -> str | None:
-    provided = request.headers.get("X-API-Key")
+def document_owner_id(actor: AuthActor) -> uuid.UUID | None:
+    """Owner stamp for a document this actor uploads.
+
+    Signed-in users own what they upload (private to their account);
+    everything else lands in the shared corpus (NULL owner).
+    """
+    return actor.user_id if actor.mode == "session" else None
+
+
+def document_owner_filter(actor: AuthActor) -> repositories.DocumentOwner:
+    """Repository owner scope for document visibility and retrieval.
+
+    - session (regular user): shared corpus + own uploads only; other
+      users' private documents are invisible (list, read, delete, dedup,
+      and retrieval all use this scope).
+    - session (admin): the whole corpus - the admin portal's documents
+      overview is an operational view, not the admin's private library.
+    - API key (curl/evals/scripts): the whole corpus, byte-for-byte
+      compatible with the pre-identity behavior (and stays DB-free).
+    - local (AUTH_ALLOW_ANONYMOUS opt-in): the whole corpus too - that
+      mode IS the pre-identity open scope (tests and offline tooling; do
+      not enable it in a multi-user deployment).
+    """
+    if actor.mode == "session":
+        return repositories.UNSCOPED if actor.role == "admin" else actor.user_id
+    return repositories.UNSCOPED
+
+
+def answer_cache_owner_key(actor: AuthActor) -> str:
+    """Answer-cache bucket for this actor; mirrors the document scope.
+
+    Scoped callers (regular sessions) get a private bucket: a cached answer
+    embeds retrieved evidence, so it may only ever be served back to the
+    user whose documents produced it. Unscoped callers (admin sessions,
+    API key, local mode) share one bucket (""), because they all search
+    the same whole corpus - sharing answers among them leaks nothing.
+
+    Entries written before this key existed lack the metadata field and
+    become unreachable (treated as misses), never cross-user.
+    """
+    if document_owner_filter(actor) is repositories.UNSCOPED:
+        return ""
+    return str(actor.user_id)
+
+
+def _provided_key(request: Request, header_key: str | None) -> str | None:
+    provided = header_key or request.headers.get("X-API-Key")
     if not provided:
         authorization = request.headers.get("Authorization", "")
         if authorization.startswith("Bearer "):
@@ -85,45 +145,56 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _session_actor(request: Request, settings: Settings) -> AuthActor | None:
+def _session_actor(token: str | None, settings: Settings) -> AuthActor | None:
     """Resolve a valid session cookie to its user; None when absent/expired.
 
     Sliding renewal: past half the TTL, the expiry is extended in place.
     """
-    token = request.cookies.get(settings.auth_cookie_name)
     if not token:
         return None
     token_hash = _hash_token(token)
     session = open_db_session()
     try:
-        row = repositories.get_session_by_token(session, token_hash)
-        now = datetime.now(timezone.utc)
-        if row is None or row.revoked_at is not None or row.expires_at <= now:
-            return None
-        user = repositories.get_user(session, row.user_id)
-        if user is None or not user.is_active:
-            return None
-        ttl = timedelta(days=settings.auth_session_ttl_days)
-        if row.expires_at - now < ttl / 2:
-            repositories.touch_session_expiry(session, row.id, now + ttl)
-        return AuthActor(
-            mode="session", role=user.role, api_key_hash=None, user_id=user.id
-        )
+        return _extracted_from__session_actor_11(session, token_hash, settings)
     finally:
         session.close()
 
 
+# TODO Rename this here and in `_session_actor`
+def _extracted_from__session_actor_11(session, token_hash, settings):
+    row = repositories.get_session_by_token(session, token_hash)
+    now = datetime.now(timezone.utc)
+    if row is None or row.revoked_at is not None or row.expires_at <= now:
+        return None
+    user = repositories.get_user(session, row.user_id)
+    if user is None or not user.is_active:
+        return None
+    ttl = timedelta(days=settings.auth_session_ttl_days)
+    if row.expires_at - now < ttl / 2:
+        repositories.touch_session_expiry(session, row.id, now + ttl)
+    return AuthActor(
+        mode="session", role=user.role, api_key_hash=None, user_id=user.id
+    )
+
+
 def get_actor(
-    request: Request, settings: Settings = Depends(get_settings)
+    request: Request,
+    api_key: str | None = Security(api_key_header_scheme),
+    session_token: str | None = Security(session_cookie_scheme),
+    settings: Settings = Depends(get_settings),
 ) -> AuthActor:
-    """Resolve the request's identity; 401 when auth is required and absent.
+    """Resolve the request's identity; 401 when authentication is absent.
 
     Precedence: a valid API key always wins (deterministic for scripts),
-    then a session cookie, then the open local scope when no API_KEY is
-    configured. With API_KEY set, neither a key nor a valid session = 401,
-    so every human client must log in.
+    then a session cookie. When neither exists: 401 — unless no API_KEY is
+    configured AND `auth_allow_anonymous` is on, in which case the open
+    local scope (pre-identity behavior) applies. The default denies
+    anonymous access so unknown callers cannot spend LLM tokens. The
+    Security() parameters are what Swagger's Authorize button fills in;
+    values are still read from the raw request as a fallback so behavior
+    is identical either way.
     """
-    provided = _provided_key(request)
+    provided = _provided_key(request, api_key)
     if settings.api_key:
         if provided and secrets.compare_digest(provided, settings.api_key):
             actor = AuthActor(
@@ -134,21 +205,43 @@ def get_actor(
             )
             request.state.actor = actor  # for per-user rate limiting downstream
             return actor
-        if (actor := _session_actor(request, settings)) is not None:
+        if (actor := _session_actor(session_token, settings)) is not None:
             request.state.actor = actor
             return actor
         raise HTTPException(
             status_code=401, detail=_UNAUTHORIZED, headers={"WWW-Authenticate": "Bearer"}
         )
-    if (actor := _session_actor(request, settings)) is not None:
+    if (actor := _session_actor(session_token, settings)) is not None:
         request.state.actor = actor
         return actor
-    actor = AuthActor(mode="local", role="local", api_key_hash=None, user_id=None)
-    request.state.actor = actor
-    return actor
+    if settings.auth_allow_anonymous:
+        actor = AuthActor(mode="local", role="local", api_key_hash=None, user_id=None)
+        request.state.actor = actor
+        return actor
+    # No key, no session, anonymous disallowed (default): sign in first.
+    raise HTTPException(
+        status_code=401,
+        detail=_SIGN_IN_REQUIRED,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 # ----------------------------------------------------------- account API
+
+
+@router.get("/config", response_model=AuthConfig)
+def auth_config(settings: Settings = Depends(get_settings)) -> AuthConfig:
+    """Public pre-login facts (no secrets): drives the SPA's auth guard.
+
+    `auth_required` is true by default (login mandatory, so anonymous
+    callers cannot spend tokens) and always true when an API_KEY is
+    configured. It is false only with AUTH_ALLOW_ANONYMOUS=true (open
+    local scope, tests/offline tooling).
+    """
+    return AuthConfig(
+        auth_required=bool(settings.api_key) or not settings.auth_allow_anonymous,
+        registration_enabled=settings.auth_allow_registration,
+    )
 
 
 def _user_out(user: repositories.User) -> UserOut:
@@ -205,33 +298,30 @@ def register(
     session: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> UserOut:
-    """Create an account; the very first one becomes the admin.
+    """Create a regular user account; always role="user".
 
-    Automatically signed in (session cookie set). When registration is
-    disabled by configuration, every attempt is 403.
+    Admin accounts are never self-served: an operator seeds them from the
+    terminal with `scripts/create_admin.py` (credentials stay out of the
+    public registration path). Automatically signed in (session cookie
+    set). When registration is disabled by configuration, every attempt
+    is 403.
     """
     if not settings.auth_allow_registration:
         raise HTTPException(status_code=403, detail="Registration is disabled.")
     if repositories.get_user_by_email(session, payload.email) is not None:
         raise HTTPException(status_code=409, detail="Email is already registered.")
-    first_user = repositories.count_users(session) == 0
     user_id = uuid.UUID(
         repositories.create_user(
             session,
             email=payload.email,
             password_hash=hash_password(payload.password),
             display_name=payload.display_name,
-            role="admin" if first_user else "user",
+            role="user",
         )
     )
-    if first_user:
-        # Adopt pre-identity local-scope chats so the admin sees them.
-        repositories.adopt_conversations(
-            session, api_key_hash=None, user_id=user_id
-        )
     token = _issue_session(session, user_id, request, settings)
     _set_session_cookie(response, token, settings)
-    logger.info("User registered: %s (role=%s)", payload.email, "admin" if first_user else "user")
+    logger.info("User registered: %s (role=user)", payload.email)
     return _user_out(repositories.get_user(session, user_id))
 
 
@@ -278,8 +368,7 @@ def logout(
     settings: Settings = Depends(get_settings),
 ) -> dict[str, bool]:
     """Revoke the current session; idempotent (no session = still 200)."""
-    token = request.cookies.get(settings.auth_cookie_name)
-    if token:
+    if token := request.cookies.get(settings.auth_cookie_name):
         session = open_db_session()
         try:
             repositories.revoke_session(session, _hash_token(token))

@@ -336,3 +336,237 @@ class TestIndexing:
         assert retried.status_code == 200
         assert fake_vector_store.deletes == [document_id]
         assert client.get(f"/documents/{document_id}").status_code == 404
+
+
+PASSWORD = "correct-horse-battery"
+
+
+def _db():
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.session import get_engine
+
+    return sessionmaker(bind=get_engine(), expire_on_commit=False)()
+
+
+def _register(client: TestClient, email: str) -> None:
+    response = client.post(
+        "/auth/register", json={"email": email, "password": PASSWORD}
+    )
+    assert response.status_code == 201, response.text
+
+
+def _promote_to_admin(email: str) -> None:
+    from app.db import repositories
+
+    session = _db()
+    try:
+        user = repositories.get_user_by_email(session, email)
+        assert user is not None
+        user.role = "admin"
+        session.commit()
+    finally:
+        session.close()
+
+
+def _create_shared_document(document_id: str, filename: str = "shared.txt") -> None:
+    """A NULL-owner document: CLI/script ingestion, visible to everyone."""
+    from app.db import repositories
+
+    session = _db()
+    try:
+        repositories.create_document(
+            session,
+            document_id=document_id,
+            original_filename=filename,
+            file_type="txt",
+            size_bytes=10,
+        )
+    finally:
+        session.close()
+
+
+class TestDocumentOwnerScoping:
+    """Uploads are private to the account that made them (user-reported fix).
+
+    A signed-in user sees the shared corpus (NULL owner: CLI ingestion,
+    pre-identity uploads) plus their own uploads - never another user's.
+    Admin sessions and API-key callers keep the full operational view.
+    """
+
+    def test_upload_is_private_to_the_uploader(
+        self, client_with_settings, db_conn
+    ) -> None:
+        alice = client_with_settings()
+        _register(alice, "alice-scoping@local.dev")
+        bob = client_with_settings()
+        _register(bob, "bob-scoping@local.dev")
+
+        document_id = upload(alice, "alice-notes.txt", SAMPLE_TXT).json()["id"]
+
+        # The uploader keeps full access.
+        assert alice.get(f"/documents/{document_id}").status_code == 200
+        listed_alice = [d["id"] for d in alice.get("/documents").json()]
+        assert document_id in listed_alice
+
+        # The other user cannot see it anywhere - list, detail, chunks,
+        # content, raw file, and delete all treat it as missing.
+        listed_bob = [d["id"] for d in bob.get("/documents").json()]
+        assert document_id not in listed_bob
+        assert bob.get(f"/documents/{document_id}").status_code == 404
+        assert bob.get(f"/documents/{document_id}/chunks").status_code == 404
+        assert bob.get(f"/documents/{document_id}/content").status_code == 404
+        assert bob.get(f"/documents/{document_id}/file").status_code == 404
+        assert bob.delete(f"/documents/{document_id}").status_code == 404
+        # The failed delete changed nothing for the real owner.
+        assert alice.get(f"/documents/{document_id}").status_code == 200
+
+    def test_shared_corpus_stays_visible_to_everyone(
+        self, client_with_settings, db_conn
+    ) -> None:
+        shared_id = str(uuid.uuid4())
+        _create_shared_document(shared_id)
+
+        alice = client_with_settings()
+        _register(alice, "alice-shared@local.dev")
+        bob = client_with_settings()
+        _register(bob, "bob-shared@local.dev")
+
+        assert shared_id in [d["id"] for d in alice.get("/documents").json()]
+        assert shared_id in [d["id"] for d in bob.get("/documents").json()]
+        assert bob.get(f"/documents/{shared_id}").status_code == 200
+
+    def test_identical_bytes_from_two_users_create_separate_documents(
+        self, client_with_settings, db_conn
+    ) -> None:
+        # Dedup is owner-scoped: the same file uploaded by two users must
+        # not collapse into one row (which would leak one user's document
+        # to the other through the duplicate response).
+        alice = client_with_settings()
+        _register(alice, "alice-dedup@local.dev")
+        bob = client_with_settings()
+        _register(bob, "bob-dedup@local.dev")
+
+        from_a = upload(alice, "policy.txt", SAMPLE_TXT).json()
+        from_b = upload(bob, "policy.txt", SAMPLE_TXT).json()
+
+        assert from_a["id"] != from_b["id"]
+        assert from_b["id"] not in [d["id"] for d in alice.get("/documents").json()]
+        assert from_a["id"] not in [d["id"] for d in bob.get("/documents").json()]
+
+    def test_same_user_reupload_still_deduplicates(
+        self, client_with_settings, db_conn
+    ) -> None:
+        alice = client_with_settings()
+        _register(alice, "alice-dedup2@local.dev")
+
+        first = upload(alice, "policy.txt", SAMPLE_TXT)
+        assert first.status_code == 202
+        again = upload(alice, "policy.txt", SAMPLE_TXT)
+        assert again.status_code == 200  # duplicate short-circuit
+        assert again.json()["id"] == first.json()["id"]
+
+    def test_admin_session_sees_every_document(
+        self, client_with_settings, db_conn
+    ) -> None:
+        alice = client_with_settings()
+        _register(alice, "alice-admin-view@local.dev")
+        document_id = upload(alice, "private.txt", SAMPLE_TXT).json()["id"]
+
+        admin = client_with_settings()
+        _register(admin, "boss-view@local.dev")
+        _promote_to_admin("boss-view@local.dev")
+
+        listed = [d["id"] for d in admin.get("/documents").json()]
+        assert document_id in listed
+        assert admin.get(f"/documents/{document_id}").status_code == 200
+
+    def test_foreign_document_id_is_404_for_retrieve_and_chat(
+        self, client_with_settings, db_conn
+    ) -> None:
+        alice = client_with_settings()
+        _register(alice, "alice-foreign@local.dev")
+        document_id = upload(alice, "only-alice.txt", SAMPLE_TXT).json()["id"]
+
+        bob = client_with_settings()
+        _register(bob, "bob-foreign@local.dev")
+
+        assert (
+            bob.post(
+                "/retrieve", json={"question": "leave?", "document_id": document_id}
+            ).status_code
+            == 404
+        )
+        assert (
+            bob.post(
+                "/chat", json={"question": "leave?", "document_id": document_id}
+            ).status_code
+            == 404
+        )
+
+    def test_retrieval_only_searches_visible_documents(
+        self, client_with_settings, fake_vector_store, db_conn
+    ) -> None:
+        alice = client_with_settings()
+        _register(alice, "alice-retrieve@local.dev")
+        doc_a = upload(alice, "alice.txt", SAMPLE_TXT).json()["id"]
+
+        bob = client_with_settings()
+        _register(bob, "bob-retrieve@local.dev")
+        doc_b = upload(bob, "bob.txt", b"# Bob\n\nContractors get 10 days.").json()["id"]
+
+        assert bob.post("/retrieve", json={"question": "days?"}).status_code == 200
+        visible_bob = fake_vector_store.queries[0]["document_ids"]
+        assert doc_b in visible_bob
+        assert doc_a not in visible_bob  # alice's upload never leaks in
+
+        assert alice.post("/retrieve", json={"question": "days?"}).status_code == 200
+        visible_alice = fake_vector_store.queries[1]["document_ids"]
+        assert doc_a in visible_alice
+        assert doc_b not in visible_alice
+
+    def test_chat_retrieval_only_searches_visible_documents(
+        self, client_with_settings, fake_vector_store, db_conn
+    ) -> None:
+        alice = client_with_settings()
+        _register(alice, "alice-chat-scope@local.dev")
+        doc_a = upload(alice, "alice.txt", SAMPLE_TXT).json()["id"]
+
+        bob = client_with_settings()
+        _register(bob, "bob-chat-scope@local.dev")
+        doc_b = upload(bob, "bob.txt", b"# Bob\n\nContractors get 10 days.").json()["id"]
+
+        response = bob.post("/chat", json={"question": "How many days?"})
+        assert response.status_code == 200
+        visible = fake_vector_store.queries[0]["document_ids"]
+        assert doc_b in visible
+        assert doc_a not in visible  # alice's upload never leaks into bob's answers
+
+    def test_user_without_uploads_sees_only_shared_corpus(
+        self, client_with_settings, fake_vector_store, db_conn
+    ) -> None:
+        # A fresh account's visible set = shared corpus (NULL owner) only;
+        # other users' uploads are never part of it.
+        alice = client_with_settings()
+        _register(alice, "alice-noshared@local.dev")
+        doc_a = upload(alice, "alice.txt", SAMPLE_TXT).json()["id"]
+
+        carol = client_with_settings()
+        _register(carol, "carol-noshared@local.dev")
+
+        assert carol.post("/retrieve", json={"question": "days?"}).status_code == 200
+        visible = fake_vector_store.queries[0]["document_ids"]
+        assert doc_a not in visible  # not alice's private upload
+        # Whatever else is visible comes from the shared corpus only
+        # (owner IS NULL), which by definition contains no user uploads.
+
+    def test_admin_retrieval_is_unscoped(
+        self, client_with_settings, fake_vector_store, db_conn
+    ) -> None:
+        admin = client_with_settings()
+        _register(admin, "boss-retrieve@local.dev")
+        _promote_to_admin("boss-retrieve@local.dev")
+
+        assert admin.post("/retrieve", json={"question": "days?"}).status_code == 200
+        # None = no document filter: the whole corpus, as before identity.
+        assert fake_vector_store.queries[0]["document_ids"] is None

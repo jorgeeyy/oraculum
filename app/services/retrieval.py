@@ -104,6 +104,7 @@ def retrieve_documents(
     store: VectorStore,
     top_k: int = 5,
     document_id: str | None = None,
+    allowed_document_ids: set[str] | None = None,
     bm25: Bm25Index | None = None,
     hybrid: bool = False,
     rrf_k: int = 60,
@@ -124,10 +125,23 @@ def retrieve_documents(
     chunk matched by the question AND a variant outranks a single-side hit.
     `query_vector` reuses a precomputed embedding of the question (the
     cache probe already embeds it), skipping only that one embed call.
+
+    Per-user scoping: `allowed_document_ids` restricts both search sides to
+    that visible set (None = unrestricted, the pre-identity behavior). An
+    empty set short-circuits to zero results before any embedding or index
+    work, so a user with no visible documents never spends a call.
     """
     trimmed = question.strip()
     if not trimmed:
         raise EmptyQuestionError("question must not be blank")
+
+    if allowed_document_ids is not None and not allowed_document_ids:
+        logger.info(
+            "retrieval skipped: no visible documents (document_id=%s question=%r)",
+            document_id or "-",
+            trimmed[:60],
+        )
+        return RetrievalOutcome(results=[], elapsed_ms=0.0)
 
     extra_queries = _clean_variants(trimmed, variants)
 
@@ -140,7 +154,10 @@ def retrieve_documents(
             vectors.extend(embedder.embed(extra_queries))
 
     vector_rankings = [
-        store.query(vector, top_k=top_k, document_id=document_id)
+        store.query(
+            vector, top_k=top_k, document_id=document_id,
+            document_ids=allowed_document_ids,
+        )
         for vector in vectors
     ]
     vector_hits = vector_rankings[0]
@@ -152,7 +169,12 @@ def retrieve_documents(
             bm25 = get_bm25_index()
         for query in [trimmed, *extra_queries]:
             try:
-                hits = bm25.search(query, top_k=top_k, document_id=document_id)
+                hits = bm25.search(
+                    query,
+                    top_k=top_k,
+                    document_id=document_id,
+                    document_ids=allowed_document_ids,
+                )
             except Exception:
                 logger.warning(
                     "BM25 search failed; falling back to vector-only", exc_info=True

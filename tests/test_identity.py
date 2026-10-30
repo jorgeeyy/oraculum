@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from app.api.auth import AuthActor, api_key_fingerprint, scope_kwargs
 from app.config import Settings, get_settings
 from app.db import repositories
-from app.db.models import Conversation, User, UserSession
+from app.db.models import Conversation, Document, User, UserSession
 from app.services.rate_limit import FixedWindowRateLimiter, get_rate_limiter
 
 from test_streaming import parse_sse  # noqa: F401  (kept: cross-module helpers)
@@ -57,36 +57,26 @@ def register(client: TestClient, email: str, password: str = PASSWORD):
     )
 
 
-def _users_before_register() -> int:
-    """User count before a register call; decides first-user assertions."""
-    session = _db()
-    try:
-        return repositories.count_users(session)
-    finally:
-        session.close()
-
-
 class TestRegister:
-    def test_first_user_is_admin_and_signed_in(self, client, db_conn) -> None:
-        was_empty = _users_before_register() == 0
-        response = register(client, "first-admin@local.dev")
+    def test_registered_user_is_never_admin(self, client, db_conn) -> None:
+        # Admin accounts are seeded from the terminal only; registration
+        # yields "user" even on a completely empty database.
+        response = register(client, "first@local.dev")
         assert response.status_code == 201
-        # Only the very first account of a fresh install becomes admin; on a
-        # database that already has accounts, later registrations are "user".
-        assert response.json()["role"] == ("admin" if was_empty else "user")
-        assert response.json()["email"] == "first-admin@local.dev"
+        assert response.json()["role"] == "user"
+        assert response.json()["email"] == "first@local.dev"
         # Session cookie set: /auth/me works immediately.
         me = client.get("/auth/me")
         assert me.status_code == 200
+        assert me.json()["role"] == "user"
         # Password material never leaks.
         assert "password" not in response.text
 
-    def test_second_user_is_regular_user(self, client_with_settings, db_conn) -> None:
-        was_empty = _users_before_register() == 0
+    def test_every_registration_is_regular_user(
+        self, client_with_settings, db_conn
+    ) -> None:
         client = client_with_settings()
-        first_role = register(client, "boss@local.dev").json()["role"]
-        assert first_role == ("admin" if was_empty else "user")
-        # A second account is always a regular user, never admin.
+        assert register(client, "boss@local.dev").json()["role"] == "user"
         client2 = client_with_settings()
         assert register(client2, "worker@local.dev").json()["role"] == "user"
 
@@ -117,8 +107,11 @@ class TestRegister:
         assert response.status_code == 403
         assert client.get("/auth/me").status_code == 401
 
-    def test_register_adopts_local_scope_chats(self, client, db_conn) -> None:
-        was_empty = _users_before_register() == 0
+    def test_register_does_not_adopt_local_scope_chats(
+        self, client, db_conn
+    ) -> None:
+        # Adoption belongs to the seeded admin (scripts/create_admin.py),
+        # never to self-service registration.
         session = _db()
         try:
             # A pre-identity local-scope conversation (the dev flow).
@@ -131,14 +124,9 @@ class TestRegister:
         listed = client.get("/conversations")
         assert listed.status_code == 200
         listed_ids = [c["id"] for c in listed.json()]
-        if was_empty:
-            # The first (admin) account adopts pre-identity chats so the
-            # admin sees them; any other local-scope chats come along too.
-            assert conversation_id in listed_ids
-        else:
-            # Only the first account adopts history; later accounts start
-            # with an empty, user-scoped inbox.
-            assert conversation_id not in listed_ids
+        # A fresh account starts with an empty inbox; shared local history
+        # stays unowned until the operator seeds the admin.
+        assert conversation_id not in listed_ids
         client.delete(f"/conversations/{conversation_id}")
 
 
@@ -444,7 +432,171 @@ class TestScopeKwargs:
         }
 
 
+class TestAuthConfig:
+    def test_config_is_public_and_reports_open_local_mode(
+        self, client_with_settings
+    ) -> None:
+        client = client_with_settings()
+        response = client.get("/auth/config")
+        assert response.status_code == 200
+        assert response.json() == {
+            "auth_required": False,
+            "registration_enabled": True,
+        }
+
+    def test_config_reports_auth_required_when_api_key_set(
+        self, client_with_settings
+    ) -> None:
+        # Public even when the API is locked down: the login page needs to
+        # know auth is required before it can authenticate.
+        client = client_with_settings(api_key="secret-a")
+        response = client.get("/auth/config")
+        assert response.status_code == 200
+        assert response.json()["auth_required"] is True
+
+    def test_config_hides_registration_when_disabled(
+        self, client_with_settings
+    ) -> None:
+        client = client_with_settings(auth_allow_registration=False)
+        assert client.get("/auth/config").json()["registration_enabled"] is False
+
+
+class TestLoginRequiredByDefault:
+    """Anonymous callers must not be able to reach token-spending endpoints.
+
+    The product default (no API_KEY, AUTH_ALLOW_ANONYMOUS unset) requires a
+    session everywhere; the open local scope is opt-in for tests/tooling.
+    """
+
+    def test_gated_endpoints_401_without_session(
+        self, client_with_settings, db_conn
+    ) -> None:
+        client = client_with_settings(auth_allow_anonymous=False)
+        assert client.get("/documents").status_code == 401
+        assert client.get("/conversations").status_code == 401
+        chat = client.post("/chat", json={"question": "spend tokens?"})
+        assert chat.status_code == 401
+        assert chat.json()["detail"] == "Sign in required."
+        # Admin surface: 401 before any role check (not signed in at all).
+        assert client.get("/admin/overview").status_code == 401
+
+    def test_public_routes_stay_open_without_session(
+        self, client_with_settings, db_conn
+    ) -> None:
+        client = client_with_settings(auth_allow_anonymous=False)
+        assert client.get("/health").status_code == 200
+        config = client.get("/auth/config")
+        assert config.status_code == 200
+        assert config.json()["auth_required"] is True
+
+    def test_registration_signs_in_and_unlocks_the_api(
+        self, client_with_settings, db_conn
+    ) -> None:
+        client = client_with_settings(auth_allow_anonymous=False)
+        assert register(client, "must-login@local.dev").status_code == 201
+        # Session cookie issued at register: the same client now passes.
+        assert client.get("/auth/me").json()["role"] == "user"
+        assert client.get("/documents").status_code == 200
+
+    def test_anonymous_still_possible_only_when_opted_in(
+        self, client_with_settings, db_conn
+    ) -> None:
+        client = client_with_settings(auth_allow_anonymous=True)
+        assert client.get("/documents").status_code == 200
+        assert client.get("/auth/config").json()["auth_required"] is False
+
+
+class TestOpenApiSecurity:
+    def test_protected_routers_expose_authorize_schemes(self, client) -> None:
+        spec = client.get("/openapi.json").json()
+        schemes = spec["components"]["securitySchemes"]
+        assert schemes["APIKeyHeader"] == {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key",
+        }
+        assert schemes["APIKeyCookie"]["in"] == "cookie"
+        # Gated routers carry the requirements (Authorize button appears)...
+        chat_security = spec["paths"]["/chat"]["post"]["security"]
+        assert {"APIKeyHeader": []} in chat_security
+        assert {"APIKeyCookie": []} in chat_security
+
+    def test_public_routes_have_no_security_requirement(self, client) -> None:
+        spec = client.get("/openapi.json").json()
+        # Health, docs-facing auth endpoints, and the config stay open.
+        assert "security" not in spec["paths"]["/health"]["get"]
+        assert "security" not in spec["paths"]["/auth/register"]["post"]
+        assert "security" not in spec["paths"]["/auth/config"]["get"]
+
+
 class TestCreateAdminScript:
+    def test_script_adopts_local_scope_chats(self, db_conn) -> None:
+        """The seeded admin inherits pre-identity history (local scope)."""
+        import getpass as getpass_module
+        from unittest.mock import patch
+
+        from scripts.create_admin import main as create_admin_main
+
+        session = _db()
+        try:
+            conversation_id = repositories.create_conversation(
+                session, title="pre-seed chat", api_key_hash=None
+            )
+        finally:
+            session.close()
+
+        email = "adopter-admin@local.dev"
+        with patch.object(getpass_module, "getpass", return_value=PASSWORD):
+            with patch("sys.argv", ["create_admin.py", email]):
+                assert create_admin_main() == 0
+
+        session = _db()
+        try:
+            admin = repositories.get_user_by_email(session, email)
+            assert admin is not None and admin.role == "admin"
+            conversation = session.get(Conversation, uuid.UUID(conversation_id))
+            assert conversation is not None
+            # Adopted: owned by the seeded admin now.
+            assert conversation.user_id == admin.id
+        finally:
+            session.close()
+
+    def test_script_adopts_shared_corpus_documents(self, db_conn) -> None:
+        """Pre-identity uploads (NULL owner) become the admin's documents."""
+        import getpass as getpass_module
+        from unittest.mock import patch
+
+        from scripts.create_admin import main as create_admin_main
+
+        session = _db()
+        try:
+            document_id = uuid.uuid4()
+            repositories.create_document(
+                session,
+                document_id=str(document_id),
+                original_filename="pre-seed.txt",
+                file_type="txt",
+                size_bytes=10,
+            )
+        finally:
+            session.close()
+
+        email = "doc-adopter-admin@local.dev"
+        with patch.object(getpass_module, "getpass", return_value=PASSWORD):
+            with patch("sys.argv", ["create_admin.py", email]):
+                assert create_admin_main() == 0
+
+        session = _db()
+        try:
+            admin = repositories.get_user_by_email(session, email)
+            assert admin is not None
+            document = session.get(Document, document_id)
+            assert document is not None
+            # Adopted: no longer shared corpus, now the admin's private doc.
+            assert document.owner_user_id == admin.id
+        finally:
+            session.close()
+
     def test_script_creates_and_promotes_admins(self, db_conn) -> None:
         from scripts.create_admin import main as create_admin_main
         import getpass as getpass_module

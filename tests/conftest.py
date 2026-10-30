@@ -60,11 +60,23 @@ class RecordingVectorStore:
             raise self.fail_delete
         self.deletes.append(document_id)
 
-    def query(self, vector, *, top_k: int = 5, document_id: str | None = None):
+    def query(
+        self,
+        vector,
+        *,
+        top_k: int = 5,
+        document_id: str | None = None,
+        document_ids: set[str] | None = None,
+    ):
         if self.fail_query is not None:
             raise self.fail_query
         self.queries.append(
-            {"vector": list(vector), "top_k": top_k, "document_id": document_id}
+            {
+                "vector": list(vector),
+                "top_k": top_k,
+                "document_id": document_id,
+                "document_ids": document_ids,
+            }
         )
         return self.query_result
 
@@ -89,11 +101,23 @@ class RecordingBm25:
             raise self.fail_index
         self.indexed.extend(list(chunks))
 
-    def search(self, query: str, *, top_k: int = 5, document_id: str | None = None):
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        document_id: str | None = None,
+        document_ids: set[str] | None = None,
+    ):
         if self.fail_search is not None:
             raise self.fail_search
         self.searches.append(
-            {"query": query, "top_k": top_k, "document_id": document_id}
+            {
+                "query": query,
+                "top_k": top_k,
+                "document_id": document_id,
+                "document_ids": document_ids,
+            }
         )
         return list(self.search_result)
 
@@ -230,7 +254,11 @@ def client(
     app.dependency_overrides[get_rate_limiter] = lambda: _PermissiveRateLimiter()
     # Same rule as the settings factory below: never inherit the semantic
     # cache flag from the developer's .env; cache tests opt in explicitly.
-    app.dependency_overrides[get_settings] = lambda: Settings(chat_cache_enabled=False)
+    # auth_allow_anonymous=True keeps the suite's pre-login request style
+    # (the required-login default is covered by dedicated identity tests).
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        chat_cache_enabled=False, auth_allow_anonymous=True
+    )
     with TestClient(app) as test_client:
         test_client.storage = storage  # type: ignore[attr-defined]
         yield test_client
@@ -259,9 +287,13 @@ def client_with_settings(
         # it must never be inherited from the developer's .env, or a flag
         # flipped for live use would silently change embed-batch shapes and
         # short-circuit retrieval underneath unrelated tests.
+        # auth_allow_anonymous defaults to False product-wide (login
+        # required); the suite pins it True here so existing tests keep
+        # their pre-login request style, exactly like the cache flag —
+        # dedicated identity tests cover the required-login default.
         merged = (
             get_settings().model_dump()
-            | {"chat_cache_enabled": False}
+            | {"chat_cache_enabled": False, "auth_allow_anonymous": True}
             | settings_overrides
         )
         app.dependency_overrides[get_settings] = lambda: Settings(**merged)
@@ -291,7 +323,14 @@ def db_conn() -> Iterator:
 
     from sqlalchemy import select
 
-    from app.db.models import ChatMessage, Conversation, Document, User, UserSession
+    from app.db.models import (
+        AuditEvent,
+        ChatMessage,
+        Conversation,
+        Document,
+        User,
+        UserSession,
+    )
 
     with engine.connect() as conn:
         existing_ids = set(
@@ -302,6 +341,7 @@ def db_conn() -> Iterator:
         )
         existing_user_ids = set(conn.execute(select(User.id)).scalars())
         existing_session_ids = set(conn.execute(select(UserSession.id)).scalars())
+        existing_audit_ids = set(conn.execute(select(AuditEvent.id)).scalars())
 
     yield engine
 
@@ -336,4 +376,9 @@ def db_conn() -> Iterator:
             conn.execute(delete(User).where(User.id.not_in(existing_user_ids)))
         else:
             conn.execute(delete(User))
+        # Audit rows reference users with SET NULL; remove test-created ones.
+        if existing_audit_ids:
+            conn.execute(delete(AuditEvent).where(AuditEvent.id.not_in(existing_audit_ids)))
+        else:
+            conn.execute(delete(AuditEvent))
     engine.dispose()

@@ -45,3 +45,17 @@ class UserOut(BaseModel):
     role: str
     created_at: datetime
     last_login_at: datetime | None
+
+
+class AuthConfig(BaseModel):
+    """Public pre-login facts for the frontend guard and login pages.
+
+    `auth_required` tells the SPA whether anonymous access is possible.
+    It is true by default — every user logs in (an anonymous caller could
+    otherwise spend LLM tokens) — and false only when the operator opts
+    into AUTH_ALLOW_ANONYMOUS=true (open local scope).
+    `registration_enabled` lets the login page hide the sign-up link.
+    """
+
+    auth_required: bool
+    registration_enabled: bool

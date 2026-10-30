@@ -104,14 +104,18 @@ class Settings(BaseSettings):
     # Self-rolled email+password accounts with DB-backed session cookies.
     # The API_KEY is the ADMIN credential: a request bearing it acts as the
     # admin service account; every other client must log in. When API_KEY is
-    # unset (local development), requests without a session behave exactly as
-    # before (single local scope, no login required).
+    # unset, a session is still required by default — anonymous callers would
+    # otherwise spend LLM tokens. AUTH_ALLOW_ANONYMOUS=true opts back into
+    # the old open local scope (tests and offline tooling only).
     auth_session_ttl_days: float = Field(default=30.0, gt=0.0)
     auth_cookie_name: str = "session"
     # Set true when serving behind HTTPS in production; local http keeps it
     # false so the browser will send the cookie back over http://127.0.0.1.
     auth_cookie_secure: bool = False
     auth_allow_registration: bool = True
+    # Default OFF: every user logs in (protects token spend). The single
+    # local scope without a session exists only when explicitly enabled.
+    auth_allow_anonymous: bool = False
     auth_login_rate_limit_per_minute: int = 5  # per IP AND per email; 0 disables
 
     # Logging: rotating file in addition to stderr. Set LOG_FILE= (empty) to

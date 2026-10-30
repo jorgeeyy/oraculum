@@ -108,9 +108,20 @@ class Bm25Index:
             conn.close()
 
     def search(
-        self, query: str, *, top_k: int = 5, document_id: str | None = None
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        document_id: str | None = None,
+        document_ids: set[str] | None = None,
     ) -> list[dict]:
-        """Top-k BM25 matches, best first; [] for a term-less query."""
+        """Top-k BM25 matches, best first; [] for a term-less query.
+
+        `document_id` pins the search to one document; `document_ids`
+        restricts it to a visible set (per-user scoping). Callers guarantee
+        the set is non-empty; an explicit `document_id` wins when both are
+        given (membership was already validated upstream).
+        """
         terms = _TOKEN_RE.findall(query)
         if not terms:
             return []
@@ -123,6 +134,10 @@ class Bm25Index:
         if document_id is not None:
             sql += " AND document_id = ?"
             params.append(document_id)
+        elif document_ids is not None:
+            placeholders = ", ".join("?" for _ in document_ids)
+            sql += f" AND document_id IN ({placeholders})"
+            params.extend(sorted(document_ids))
         sql += " ORDER BY bm25(chunks) LIMIT ?"
         params.append(top_k)
 

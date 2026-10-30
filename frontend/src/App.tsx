@@ -1,21 +1,25 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileText,
-  KeyRound,
+  LogIn,
+  LogOut,
   Menu,
   MessageSquare,
   MessageSquareDashed,
   Moon,
   Plus,
+  ShieldCheck,
   Sun,
   Trash2,
   X,
 } from "lucide-react";
-import { api, getApiKey, setApiKey } from "./api/client";
+import { api } from "./api/client";
+import { useAuth } from "./auth/AuthProvider";
 import type { ConversationSummary, DocumentRecord } from "./api/types";
 import HealthBadge from "./components/HealthBadge";
 import { useDocuments } from "./hooks/useDocuments";
@@ -55,10 +59,14 @@ const DOC_STATUS_DOT: Record<DocumentRecord["status"], string> = {
 };
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("chat");
-  const [keyModalOpen, setKeyModalOpen] = useState(false);
-  const [keyDraft, setKeyDraft] = useState(getApiKey() ?? "");
-  const [apiKey, setApiKeyState] = useState(getApiKey());
+  // The active tab follows the route (/chat | /documents), not local state:
+  // guards wrap these routes and deep links must land in the right view.
+  const routerNavigate = useNavigate();
+  const location = useLocation();
+  const { user, authRequired, logout } = useAuth();
+  const tab: Tab = location.pathname.startsWith("/documents")
+    ? "documents"
+    : "chat";
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [isDark, setIsDark] = useState(readIsDark);
@@ -96,14 +104,7 @@ export default function App() {
 
   useEffect(() => {
     refreshConversations();
-  }, [refreshConversations, apiKey]);
-
-  const saveKey = () => {
-    const trimmed = keyDraft.trim();
-    setApiKey(trimmed || null);
-    setApiKeyState(trimmed || null);
-    setKeyModalOpen(false);
-  };
+  }, [refreshConversations]);
 
   const toggleTheme = () => {
     const next = !isDark;
@@ -128,16 +129,26 @@ export default function App() {
     });
   };
 
-  const navigate = (next: Tab) => {
-    setTab(next);
+  const goToTab = (next: Tab) => {
+    routerNavigate(next === "chat" ? "/chat" : "/documents");
     setSidebarOpen(false);
+  };
+
+  const handleSignOut = async () => {
+    setSidebarOpen(false);
+    try {
+      await logout();
+    } catch {
+      // Logout is best-effort (network): local state is already cleared.
+    }
+    routerNavigate(authRequired ? "/login" : "/", { replace: true });
   };
 
   const startNewChat = () => {
     setActiveId(null);
     setChatKey("new");
     setPendingDeleteId(null);
-    setTab("chat");
+    routerNavigate("/chat");
     setSidebarOpen(false);
   };
 
@@ -145,13 +156,13 @@ export default function App() {
     setActiveId(id);
     setChatKey(id);
     setPendingDeleteId(null);
-    setTab("chat");
+    routerNavigate("/chat");
     setSidebarOpen(false);
   };
 
   const selectDocument = (id: string) => {
     setSelectedDocId(id);
-    setTab("documents");
+    routerNavigate("/documents");
     setSidebarOpen(false);
   };
 
@@ -237,11 +248,11 @@ export default function App() {
                   <button
                     onClick={() => {
                       if (id === "chat") {
-                        navigate(id);
+                        goToTab(id);
                         setChatsExpanded(true);
                       } else {
                         setSelectedDocId(null);
-                        navigate(id);
+                        goToTab(id);
                         setDocsExpanded(true);
                       }
                     }}
@@ -264,7 +275,7 @@ export default function App() {
                   >
                     <button
                       onClick={() => {
-                        navigate(id);
+                        goToTab(id);
                         setChatsExpanded(true);
                       }}
                       className={`flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
@@ -305,7 +316,7 @@ export default function App() {
                     <button
                       onClick={() => {
                         setSelectedDocId(null);
-                        navigate(id);
+                        goToTab(id);
                         setDocsExpanded(true);
                       }}
                       className={`flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
@@ -455,6 +466,21 @@ export default function App() {
                 )}
               </Fragment>
             ))}
+            {user?.role === "admin" && (
+              <Link
+                to="/admin"
+                onClick={() => setSidebarOpen(false)}
+                title="Admin dashboard"
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
+                  location.pathname.startsWith("/admin")
+                    ? "bg-surface font-medium text-ink shadow-sm ring-1 ring-line"
+                    : "text-muted hover:bg-surface/70 hover:text-ink"
+                } ${collapsed ? "lg:justify-center lg:px-0" : ""}`}
+              >
+                <ShieldCheck size={16} strokeWidth={2} />
+                <span className={collapsed ? "lg:hidden" : ""}>Admin</span>
+              </Link>
+            )}
           </nav>
         </div>
 
@@ -462,22 +488,31 @@ export default function App() {
           <div className={collapsed ? "lg:hidden" : ""}>
             <HealthBadge />
           </div>
-          <button
-            onClick={() => setKeyModalOpen(true)}
-            title={apiKey ? "API key (configured)" : "API key (not set)"}
-            className={`flex items-center rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink ${
-              collapsed ? "lg:justify-center lg:px-0" : "gap-2.5"
-            }`}
-          >
-            <KeyRound size={16} strokeWidth={2} />
-            <span className={collapsed ? "lg:hidden" : ""}>API key</span>
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                apiKey ? "bg-emerald-500" : "bg-faint"
-              } ${collapsed ? "" : "ml-auto"}`}
-              title={apiKey ? "Key configured" : "No key set"}
-            />
-          </button>
+          {user ? (
+            <button
+              onClick={handleSignOut}
+              title={`Signed in as ${user.email} — sign out`}
+              className={`flex items-center rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink ${
+                collapsed ? "lg:justify-center lg:px-0" : "gap-2.5"
+              }`}
+            >
+              <LogOut size={16} strokeWidth={2} />
+              <span className={`truncate ${collapsed ? "lg:hidden" : ""}`}>
+                Sign out
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={() => routerNavigate("/login")}
+              title="Sign in"
+              className={`flex items-center rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface/70 hover:text-ink ${
+                collapsed ? "lg:justify-center lg:px-0" : "gap-2.5"
+              }`}
+            >
+              <LogIn size={16} strokeWidth={2} />
+              <span className={collapsed ? "lg:hidden" : ""}>Sign in</span>
+            </button>
+          )}
           <button
             onClick={toggleTheme}
             title={isDark ? "Light mode" : "Dark mode"}
@@ -512,14 +547,14 @@ export default function App() {
           {tab === "chat" && (
             <Chat
               key={chatKey}
-              onAskKey={() => setKeyModalOpen(true)}
+              onAuthRequired={() => routerNavigate("/login")}
               conversationId={activeId}
               onConversationCreated={handleConversationCreated}
             />
           )}
           {tab === "documents" && (
             <Documents
-              onAskKey={() => setKeyModalOpen(true)}
+              onAuthRequired={() => routerNavigate("/login")}
               documents={docList}
               loading={docsLoading}
               loadError={docsError}
@@ -532,66 +567,6 @@ export default function App() {
         </main>
       </div>
 
-      {/* API key dialog */}
-      {keyModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setKeyModalOpen(false);
-          }}
-        >
-          <div className="w-full max-w-md rounded-2xl border border-line bg-elevated p-6 shadow-2xl">
-            <div className="mb-1 flex items-center justify-between">
-              <h2 className="text-base font-semibold">API key</h2>
-              <button
-                className="rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink"
-                onClick={() => setKeyModalOpen(false)}
-                aria-label="Close"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <p className="mb-4 text-sm text-muted">
-              Sent as <code className="rounded bg-surface px-1 py-0.5 text-[13px]">X-API-Key</code>{" "}
-              with every request. Only required when the server has{" "}
-              <code className="rounded bg-surface px-1 py-0.5 text-[13px]">API_KEY</code>{" "}
-              configured.
-            </p>
-            <input
-              type="text"
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              placeholder="paste API key"
-              className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/25"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveKey();
-              }}
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              {apiKey && (
-                <button
-                  className="rounded-lg px-3 py-1.5 text-sm text-muted hover:bg-surface hover:text-ink"
-                  onClick={() => {
-                    setKeyDraft("");
-                    setApiKey(null);
-                    setApiKeyState(null);
-                    setKeyModalOpen(false);
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-              <button
-                className="rounded-lg px-3 py-1.5 text-sm font-medium text-on-accent bg-accent hover:bg-accent-hover"
-                onClick={saveKey}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
