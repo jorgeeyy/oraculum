@@ -30,12 +30,12 @@ def _engine_for(url: str) -> Engine:
 
 def get_engine() -> Engine:
     """Return the application engine, or raise a clear config error."""
-    url = get_settings().database_url
-    if not url:
+    if url := get_settings().database_url:
+        return _engine_for(normalize_database_url(url))
+    else:
         raise DatabaseNotConfiguredError(
             "DATABASE_URL is not configured. Set it in .env (see .env.example)."
         )
-    return _engine_for(normalize_database_url(url))
 
 
 def get_session() -> Iterator[Session]:
