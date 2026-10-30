@@ -29,34 +29,26 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     database_url: str | None = None
 
-    # Ingestion (Phase 1)
+    # Ingestion
     chunk_size_tokens: int = 600
     chunk_overlap_tokens: int = 80
     max_file_size_bytes: int = 10 * 1024 * 1024
     uploads_dir: str = "data/uploads"
 
-    # Embeddings and vector indexing (Phase 2)
+    # Embeddings and vector indexing
     embedding_model: str = "text-embedding-3-small"
     embedding_batch_size: int = 100
     embedding_max_retries: int = 3
     embedding_timeout_seconds: float = 30.0
     chroma_dir: str = "data/chroma"
     vector_collection: str = "documents"
-
-    # Retrieval (Phase 3)
-    # Server-wide default for /retrieve and /chat; a request may override
-    # per call via its optional top_k field. Bounded so a bad deploy value
-    # fails at startup instead of at request time.
-    # 8: with 5 the answer to a term-specific question could sit at rank 6
-    # outside the cutoff (observed on the Acme policy corpus).
     retrieval_top_k: int = Field(default=8, ge=1, le=20)
-    # Hybrid term+vector search: BM25 (SQLite FTS5) ranks are fused with the
-    # vector ranks via Reciprocal Rank Fusion. False = legacy pure-vector path.
+
     retrieval_hybrid: bool = True
     retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
     bm25_db_path: str = "data/bm25.db"
 
-    # Answer generation (Phase 4)
+    # Answer generation
     chat_model: str = "gpt-4o-mini"
     chat_max_tokens: int = 500
     chat_temperature: float = 0.0
@@ -96,7 +88,7 @@ class Settings(BaseSettings):
     chat_query_expansion: bool = False
     chat_query_expansion_variants: int = Field(default=2, ge=1, le=5)
 
-    # Reliability and security (Phase 5)
+    # Reliability and security
     rate_limit_per_minute: int = 60  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it
 

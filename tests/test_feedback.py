@@ -238,21 +238,31 @@ def test_list_feedback_returns_only_rated_answers(
         session = sessionmaker(bind=db_conn, expire_on_commit=False)()
         try:
             # Unrated rows (both messages of the exchange) are excluded.
-            assert repositories.list_feedback(session) == []
+            # Scope to THIS exchange: the dev database may already hold
+            # rated answers from manual testing - never assume it is empty.
+
+            def mine(rows):
+                return [
+                    r for r in rows if r["conversation_id"] == conversation_id
+                ]
+
+            assert mine(repositories.list_feedback(session)) == []
 
             client.put(
                 f"/chat/messages/{message_id}/feedback", json={"rating": "up"}
             )
-            rows = repositories.list_feedback(session)
+            rows = mine(repositories.list_feedback(session))
             assert len(rows) == 1
             assert rows[0]["message_id"] == message_id
             assert rows[0]["conversation_id"] == conversation_id
             assert rows[0]["feedback"] == "up"
             assert rows[0]["answer"] == fake_generator.result.answer
 
-            # Bucket filter for the --rating flag.
-            assert repositories.list_feedback(session, rating="down") == []
-            assert len(repositories.list_feedback(session, rating="up")) == 1
+            # Bucket filter for the --rating flag (scoped the same way).
+            assert mine(repositories.list_feedback(session, rating="down")) == []
+            assert (
+                len(mine(repositories.list_feedback(session, rating="up"))) == 1
+            )
         finally:
             session.close()
     finally:

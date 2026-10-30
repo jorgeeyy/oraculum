@@ -16,6 +16,12 @@ Registration never creates admins — this script is the only way.
 import getpass
 import sys
 import uuid
+from pathlib import Path
+
+# When run as `python scripts/create_admin.py`, sys.path[0] is the scripts/
+# directory, not the project root - bootstrap it so `app` resolves (same
+# pattern as every other script in this directory).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.api.auth import api_key_fingerprint
 from app.config import get_settings
