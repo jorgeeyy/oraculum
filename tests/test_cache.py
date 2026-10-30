@@ -105,6 +105,27 @@ def _register(client, email: str) -> None:
     assert response.status_code == 201, response.text
 
 
+def _create_shared_document(db_conn) -> str:
+    """Seed one NULL-owner row so scoped callers have a non-empty visible set.
+
+    Tests must never assume a pre-existing shared corpus: the dev database
+    may be freshly flushed. db_conn removes the row at teardown.
+    """
+    session = sessionmaker(bind=db_conn, expire_on_commit=False)()
+    document_id = str(uuid.uuid4())
+    try:
+        repositories.create_document(
+            session,
+            document_id=document_id,
+            original_filename="shared.md",
+            file_type="md",
+            size_bytes=10,
+        )
+    finally:
+        session.close()
+    return document_id
+
+
 @pytest.fixture()
 def cache(tmp_path) -> AnswerCache:
     """A real AnswerCache backed by Chroma in a throw-away directory."""
@@ -345,6 +366,9 @@ class TestCacheEndpoint:
     def test_cached_answer_is_never_served_across_users(
         self, cache_client_factory, fake_vector_store, fake_generator, db_conn
     ) -> None:
+        # Seed the shared corpus: session users need a non-empty visible
+        # set to reach generation (a fresh flush may leave none).
+        _create_shared_document(db_conn)
         fake_vector_store.query_result = [STORE_HIT]
 
         alice = cache_client_factory()
@@ -400,6 +424,10 @@ class TestCacheEndpoint:
     ) -> None:
         # The mirror of the test above: an entry stored by a full-corpus
         # caller may cite anything, so a regular user never receives it.
+        # The shared corpus is seeded so the user's own request reaches
+        # generation (fresh DBs may otherwise short-circuit to a refusal,
+        # which is never cached and would prove nothing).
+        _create_shared_document(db_conn)
         fake_vector_store.query_result = [STORE_HIT]
         anonymous = cache_client_factory()
         anonymous.post("/chat", json={"question": "How many days?"})

@@ -545,8 +545,13 @@ class TestDocumentOwnerScoping:
     def test_user_without_uploads_sees_only_shared_corpus(
         self, client_with_settings, fake_vector_store, db_conn
     ) -> None:
-        # A fresh account's visible set = shared corpus (NULL owner) only;
-        # other users' uploads are never part of it.
+        # Self-contained: the shared corpus is seeded here, never assumed
+        # from the dev database (which may be freshly flushed). A fresh
+        # account's visible set = shared corpus (NULL owner) only; other
+        # users' uploads are never part of it.
+        shared_id = str(uuid.uuid4())
+        _create_shared_document(shared_id)
+
         alice = client_with_settings()
         _register(alice, "alice-noshared@local.dev")
         doc_a = upload(alice, "alice.txt", SAMPLE_TXT).json()["id"]
@@ -556,9 +561,8 @@ class TestDocumentOwnerScoping:
 
         assert carol.post("/retrieve", json={"question": "days?"}).status_code == 200
         visible = fake_vector_store.queries[0]["document_ids"]
-        assert doc_a not in visible  # not alice's private upload
-        # Whatever else is visible comes from the shared corpus only
-        # (owner IS NULL), which by definition contains no user uploads.
+        assert shared_id in visible  # shared corpus stays visible to everyone
+        assert doc_a not in visible  # but alice's private upload never leaks
 
     def test_admin_retrieval_is_unscoped(
         self, client_with_settings, fake_vector_store, db_conn
