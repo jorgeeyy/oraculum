@@ -175,6 +175,9 @@ export interface AdminUser {
   is_active: boolean;
   created_at: string;
   last_login_at: string | null;
+  // Per-user budget overrides (USD); null = follow the global settings.
+  daily_budget_usd: number | null;
+  monthly_budget_usd: number | null;
 }
 
 export interface AdminOverview {
@@ -192,16 +195,52 @@ export interface AdminOverview {
 export interface UsageDay {
   day: string | null;
   answers: number;
+  // Ledger columns (usage_events); zero when the day had no spend rows.
+  requests: number;
+  spend_usd: number;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+// Lifetime counters: transcript answers/feedback + ledger spend.
+export interface UsageTotals {
+  answers: number;
+  feedback_up: number;
+  feedback_down: number;
+  requests: number;
+  spend_usd: number;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+// Spend grouped by account or model over the window (admin rollups).
+export interface UsageRollup {
+  key: string; // email or model name; "unattributed" for NULL ledger rows
+  requests: number;
+  spend_usd: number;
+  tokens_in: number;
+  tokens_out: number;
 }
 
 export interface AdminUsage {
   days: number;
   daily: UsageDay[];
-  totals: {
-    answers: number;
-    feedback_up: number;
-    feedback_down: number;
-  };
+  totals: UsageTotals;
+  by_user: UsageRollup[];
+  by_model: UsageRollup[];
+  spend_usd: number; // window spend (sum of daily)
+}
+
+// GET /usage/me — one account's own spend + effective budget state.
+export interface MyUsage {
+  days: number;
+  daily: UsageDay[];
+  totals: UsageTotals;
+  spend_usd: number;
+  daily_budget_usd: number | null; // effective limit (override or global)
+  monthly_budget_usd: number | null;
+  daily_spend_usd: number;
+  monthly_spend_usd: number;
 }
 
 export interface FeedbackItem {

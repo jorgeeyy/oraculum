@@ -9,6 +9,92 @@ function fmtDate(value: string | null): string {
   return new Date(value).toLocaleDateString();
 }
 
+function toDraft(value: number | null): string {
+  return value === null ? "" : String(value);
+}
+
+/**
+ * Per-user budget overrides: two small inputs + Save. Empty follows the
+ * global default; 0 disables that window. Local state so an unrelated
+ * table refresh doesn't clobber half-typed values.
+ */
+function BudgetCell({
+  user,
+  disabled,
+  onSave,
+}: {
+  user: AdminUser;
+  disabled: boolean;
+  onSave: (daily: number | null, monthly: number | null) => Promise<void>;
+}) {
+  const [daily, setDaily] = useState(toDraft(user.daily_budget_usd));
+  const [monthly, setMonthly] = useState(toDraft(user.monthly_budget_usd));
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const dirty =
+    daily !== toDraft(user.daily_budget_usd) ||
+    monthly !== toDraft(user.monthly_budget_usd);
+
+  const save = async () => {
+    const parse = (raw: string): number | null | "invalid" => {
+      const trimmed = raw.trim();
+      if (trimmed === "") return null;
+      const value = Number(trimmed);
+      return Number.isFinite(value) && value >= 0 ? value : "invalid";
+    };
+    const parsedDaily = parse(daily);
+    const parsedMonthly = parse(monthly);
+    if (parsedDaily === "invalid" || parsedMonthly === "invalid") {
+      setLocalError("Use USD ≥ 0 (empty = global).");
+      return;
+    }
+    setLocalError(null);
+    await onSave(parsedDaily, parsedMonthly);
+  };
+
+  const inputClass =
+    "w-20 rounded-lg border border-line bg-surface px-2 py-1 text-xs text-ink placeholder:text-faint focus:border-accent focus:outline-none disabled:opacity-50";
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        aria-label={`Daily budget (USD) for ${user.email}`}
+        placeholder="daily"
+        value={daily}
+        disabled={disabled}
+        onChange={(event) => setDaily(event.target.value)}
+        className={inputClass}
+      />
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        aria-label={`Monthly budget (USD) for ${user.email}`}
+        placeholder="monthly"
+        value={monthly}
+        disabled={disabled}
+        onChange={(event) => setMonthly(event.target.value)}
+        className={inputClass}
+      />
+      <button
+        disabled={disabled || !dirty}
+        onClick={() => void save()}
+        className="rounded-lg border border-line bg-surface px-2 py-1 text-xs text-muted hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Save
+      </button>
+      {localError && (
+        <span className="whitespace-nowrap text-xs text-red-600 dark:text-red-400">
+          {localError}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function AdminUsersPage() {
   const { user: me } = useAuth();
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -66,6 +152,30 @@ export default function AdminUsersPage() {
     }
   };
 
+  // Budget overrides are a typed edit, not a destructive action: no confirm
+  // dialog, but the audit trail records every change server-side.
+  const saveBudgets = async (
+    target: AdminUser,
+    daily: number | null,
+    monthly: number | null,
+  ) => {
+    setBusyId(target.id);
+    setNotice(null);
+    setError(null);
+    try {
+      await api.adminPatchUser(target.id, {
+        daily_budget_usd: daily,
+        monthly_budget_usd: monthly,
+      });
+      await load();
+      setNotice(`Budgets updated for ${target.email}.`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Budget update failed.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -102,6 +212,7 @@ export default function AdminUsersPage() {
                 <th className="px-4 py-2.5 font-medium">Email</th>
                 <th className="px-4 py-2.5 font-medium">Role</th>
                 <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-4 py-2.5 font-medium">Budgets (d / m, USD)</th>
                 <th className="px-4 py-2.5 font-medium">Last login</th>
                 <th className="px-4 py-2.5 text-right font-medium">Actions</th>
               </tr>
@@ -147,6 +258,15 @@ export default function AdminUsersPage() {
                         />
                         {u.is_active ? "active" : "disabled"}
                       </span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <BudgetCell
+                        user={u}
+                        disabled={busy}
+                        onSave={(daily, monthly) =>
+                          saveBudgets(u, daily, monthly)
+                        }
+                      />
                     </td>
                     <td className="px-4 py-2.5 text-xs text-muted">
                       {fmtDate(u.last_login_at)}
@@ -204,6 +324,11 @@ export default function AdminUsersPage() {
           </table>
         </div>
       )}
+
+      <p className="text-xs text-faint">
+        Budgets are per-user USD caps enforced on chat before any model spend.
+        Empty follows the global default; 0 disables that window.
+      </p>
     </div>
   );
 }

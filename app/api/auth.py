@@ -35,6 +35,7 @@ from app.api.deps import get_db_session, open_db_session
 from app.config import Settings, get_settings
 from app.db import repositories
 from app.schemas.auth import AuthConfig, LoginRequest, RegisterRequest, UserOut
+from app.services.audit import record_audit
 from app.services.passwords import hash_password, verify_password
 from app.services.rate_limit import get_rate_limiter
 
@@ -321,6 +322,17 @@ def register(
     )
     token = _issue_session(session, user_id, request, settings)
     _set_session_cookie(response, token, settings)
+    # Label the audit row with the account that was just created.
+    request.state.actor = AuthActor(
+        mode="session", role="user", api_key_hash=None, user_id=user_id
+    )
+    record_audit(
+        session,
+        request,
+        action="auth.register",
+        target_type="user",
+        target_id=str(user_id),
+    )
     logger.info("User registered: %s (role=user)", payload.email)
     return _user_out(repositories.get_user(session, user_id))
 
@@ -340,6 +352,13 @@ def login(
     if limit > 0:
         for throttle_key in (f"auth:ip:{ip}", f"auth:email:{payload.email}"):
             if not limiter.allow(throttle_key, limit):
+                record_audit(
+                    session,
+                    request,
+                    action="auth.login_throttled",
+                    target_type="email",
+                    target_id=payload.email,
+                )
                 raise HTTPException(
                     status_code=429,
                     detail="Too many login attempts. Try again later.",
@@ -351,12 +370,38 @@ def login(
         or user.password_hash is None  # service accounts never log in
         or not verify_password(user.password_hash, payload.password)
     ):
+        record_audit(
+            session,
+            request,
+            action="auth.login_failed",
+            target_type="email",
+            target_id=payload.email,
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not user.is_active:
+        record_audit(
+            session,
+            request,
+            action="auth.login_disabled",
+            target_type="user",
+            target_id=str(user.id),
+        )
         raise HTTPException(status_code=403, detail="This account is disabled.")
     token = _issue_session(session, user.id, request, settings)
     _set_session_cookie(response, token, settings)
     repositories.touch_last_login(session, user.id)
+    # The audit trail labels the actor; the identity was just proven, so
+    # attach it to the request before recording (get_actor never ran here).
+    request.state.actor = AuthActor(
+        mode="session", role=user.role, api_key_hash=None, user_id=user.id
+    )
+    record_audit(
+        session,
+        request,
+        action="auth.login",
+        target_type="user",
+        target_id=str(user.id),
+    )
     logger.info("User logged in: %s", payload.email)
     return _user_out(user)
 
@@ -371,7 +416,25 @@ def logout(
     if token := request.cookies.get(settings.auth_cookie_name):
         session = open_db_session()
         try:
-            repositories.revoke_session(session, _hash_token(token))
+            token_hash = _hash_token(token)
+            row = repositories.get_session_by_token(session, token_hash)
+            if row is not None:
+                # get_actor never runs on this route; attach the resolved
+                # identity so the audit row is labeled with the real user.
+                request.state.actor = AuthActor(
+                    mode="session",
+                    role="user",
+                    api_key_hash=None,
+                    user_id=row.user_id,
+                )
+                record_audit(
+                    session,
+                    request,
+                    action="auth.logout",
+                    target_type="user",
+                    target_id=str(row.user_id),
+                )
+            repositories.revoke_session(session, token_hash)
         finally:
             session.close()
     response.delete_cookie(settings.auth_cookie_name, path="/")

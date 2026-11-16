@@ -27,10 +27,15 @@ def _make_client(
     app.dependency_overrides[get_generator] = lambda: fake_generator
     # Always pin: never inherit the dev .env's cache flag, and keep the
     # suite's pre-login request style (login-required default is covered
-    # by dedicated identity tests with auth_allow_anonymous=False).
+    # by dedicated identity tests with auth_allow_anonymous=False). The
+    # usage ledger stays off and budgets unset so the suite never writes
+    # ledger rows into the developer's database or trips a budget gate.
     merged = get_settings().model_dump() | {
         "chat_cache_enabled": False,
         "auth_allow_anonymous": True,
+        "usage_ledger_enabled": False,
+        "usage_daily_budget_usd": None,
+        "usage_monthly_budget_usd": None,
     }
     if settings_overrides:
         merged = merged | settings_overrides

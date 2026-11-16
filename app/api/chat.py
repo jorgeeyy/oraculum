@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -40,8 +40,15 @@ from app.services.errors import (
 )
 from app.services.generation import INSUFFICIENT_ANSWER, Generator
 from app.services.openai_client import get_openai_client
+from app.services.pricing import cost_usd
 from app.services.rate_limit import enforce_rate_limit
 from app.services.retrieval import EmptyQuestionError, RetrievalOutcome, retrieve_documents
+from app.services.usage import (
+    BudgetCheck,
+    enforce_budget,
+    record_usage,
+    usage_warn_headers,
+)
 from app.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -135,6 +142,51 @@ def _conversation_title(question: str) -> str:
         return question
     cut = question[:_TITLE_CHARS].rsplit(" ", 1)[0]
     return f"{cut} ..."
+
+
+def _embed_tokens(embedder: Embedder, before: int) -> int:
+    """Embedding tokens spent since `before` (embedder keeps a totalizer)."""
+    return max(0, getattr(embedder, "tokens_in", 0) - before)
+
+
+def _record_chat_usage(
+    *,
+    actor: AuthActor,
+    endpoint: str,
+    embedder: Embedder,
+    embed_before: int,
+    generator: Generator,
+    gen_tokens_in: int,
+    gen_tokens_out: int,
+    latency_ms: float,
+    status: str | None,
+    settings: Settings,
+) -> None:
+    """One ledger row per chat call, priced across both models.
+
+    tokens_in counts everything fed to a model (embedding + generation
+    prompt); est_usd is the sum of each leg's estimate and stays None only
+    when neither model has a known price.
+    """
+    embed_tokens = _embed_tokens(embedder, embed_before)
+    embed_cost = cost_usd(getattr(embedder, "model", "") or "", embed_tokens, 0)
+    gen_cost = cost_usd(generator.model or "", gen_tokens_in, gen_tokens_out)
+    est = (
+        None
+        if embed_cost is None and gen_cost is None
+        else round((embed_cost or 0.0) + (gen_cost or 0.0), 6)
+    )
+    record_usage(
+        actor=actor,
+        endpoint=endpoint,
+        model=generator.model,
+        tokens_in=embed_tokens + gen_tokens_in,
+        tokens_out=gen_tokens_out,
+        latency_ms=latency_ms,
+        status=status,
+        est_usd=est,
+        settings=settings,
+    )
 
 
 def _persist_exchange(
@@ -469,6 +521,7 @@ def _store_in_cache(
 @router.post("", response_model=ChatResponse, dependencies=[Depends(enforce_rate_limit)])
 def chat(
     request: ChatRequest,
+    response: Response,
     embedder: Embedder = Depends(get_embedder),
     store: VectorStore = Depends(get_vector_store),
     bm25: Bm25Index = Depends(get_bm25_index),
@@ -486,6 +539,15 @@ def chat(
     chunks - unknown citations are dropped and uncited answers are
     downgraded to insufficient_evidence.
     """
+    # Budget gate BEFORE any spend (embedding or generation). Over budget
+    # -> structured 403; nearing it -> X-Usage-Warn on the response (set on
+    # every path: answered, cached, or refusal - the header describes the
+    # account state, not the answer).
+    budget = enforce_budget(actor, settings)
+    for header, value in usage_warn_headers(budget).items():
+        response.headers[header] = value
+    embed_before = getattr(embedder, "tokens_in", 0)
+
     prepared = _prepare_chat(
         request,
         embedder=embedder,
@@ -498,6 +560,19 @@ def chat(
     )
 
     if prepared.cache_hit is not None:
+        hit = prepared.cache_hit
+        _record_chat_usage(
+            actor=actor,
+            endpoint="chat",
+            embedder=embedder,
+            embed_before=embed_before,
+            generator=generator,
+            gen_tokens_in=0,  # cache hits never reach the LLM
+            gen_tokens_out=0,
+            latency_ms=prepared.retrieval.elapsed_ms,
+            status=hit.status,
+            settings=settings,
+        )
         return _cached_response(
             request, prepared, settings=settings, generator=generator, actor=actor
         )
@@ -506,6 +581,18 @@ def chat(
 
     # No evidence: refuse deterministically without spending an LLM call.
     if not retrieval.results:
+        _record_chat_usage(
+            actor=actor,
+            endpoint="chat",
+            embedder=embedder,
+            embed_before=embed_before,
+            generator=generator,
+            gen_tokens_in=0,
+            gen_tokens_out=0,
+            latency_ms=retrieval.elapsed_ms,
+            status="insufficient_evidence",
+            settings=settings,
+        )
         saved = _persist_exchange(
             settings,
             request,
@@ -539,6 +626,19 @@ def chat(
             status_code=503,
             detail={"message": "The answer service is unavailable. Try again."},
         ) from exc
+
+    _record_chat_usage(
+        actor=actor,
+        endpoint="chat",
+        embedder=embedder,
+        embed_before=embed_before,
+        generator=generator,
+        gen_tokens_in=outcome.tokens_in,
+        gen_tokens_out=outcome.tokens_out,
+        latency_ms=retrieval.elapsed_ms + outcome.elapsed_ms,
+        status=outcome.status,
+        settings=settings,
+    )
 
     logger.info(
         "chat status=%s sources=%d retrieval_ms=%.0f generation_ms=%.0f "
@@ -620,6 +720,11 @@ def chat_stream(
     outage) still return normal HTTP status codes because they happen
     before the response starts.
     """
+    # Budget gate BEFORE any spend (embedding or generation). Over budget
+    # -> structured 403; nearing it -> X-Usage-Warn on the stream's headers.
+    budget = enforce_budget(actor, settings)
+    embed_before = getattr(embedder, "tokens_in", 0)
+
     prepared = _prepare_chat(
         request,
         embedder=embedder,
@@ -672,6 +777,18 @@ def chat_stream(
                 retrieval.elapsed_ms,
                 request.question[:60],
             )
+            _record_chat_usage(
+                actor=actor,
+                endpoint="chat_stream",
+                embedder=embedder,
+                embed_before=embed_before,
+                generator=generator,
+                gen_tokens_in=0,  # cache hits never reach the LLM
+                gen_tokens_out=0,
+                latency_ms=retrieval.elapsed_ms,
+                status=hit.status,
+                settings=settings,
+            )
             yield _sse("delta", {"text": hit.answer})
             yield _sse(
                 "done",
@@ -693,6 +810,18 @@ def chat_stream(
 
         # No evidence: refuse deterministically without spending an LLM call.
         if not retrieval.results:
+            _record_chat_usage(
+                actor=actor,
+                endpoint="chat_stream",
+                embedder=embedder,
+                embed_before=embed_before,
+                generator=generator,
+                gen_tokens_in=0,
+                gen_tokens_out=0,
+                latency_ms=retrieval.elapsed_ms,
+                status="insufficient_evidence",
+                settings=settings,
+            )
             saved = _persist_exchange(
                 settings,
                 request,
@@ -763,6 +892,18 @@ def chat_stream(
             prepared.expanded,
             request.question[:60],
         )
+        _record_chat_usage(
+            actor=actor,
+            endpoint="chat_stream",
+            embedder=embedder,
+            embed_before=embed_before,
+            generator=generator,
+            gen_tokens_in=outcome.tokens_in,
+            gen_tokens_out=outcome.tokens_out,
+            latency_ms=retrieval.elapsed_ms + outcome.elapsed_ms,
+            status=outcome.status,
+            settings=settings,
+        )
         _store_in_cache(
             prepared,
             request,
@@ -806,6 +947,7 @@ def chat_stream(
             "Connection": "keep-alive",
             # Disable proxy buffering so frames flush immediately.
             "X-Accel-Buffering": "no",
+            **usage_warn_headers(budget),
         },
     )
 

@@ -21,6 +21,7 @@ from app.services.errors import (
 )
 from app.services.rate_limit import enforce_rate_limit
 from app.services.retrieval import EmptyQuestionError, retrieve_documents
+from app.services.usage import record_usage
 from app.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ def retrieve(
             session.close()
 
     try:
+        embed_before = getattr(embedder, "tokens_in", 0)
         outcome = retrieve_documents(
             request.question,
             embedder=embedder,
@@ -96,6 +98,21 @@ def retrieve(
             status_code=503,
             detail={"message": "Vector search is unavailable. Try again."},
         ) from exc
+
+    # Ledger: retrieval spends embedding tokens only (no LLM call, so no
+    # budget gate here - enforcement guards /chat* where generation spend
+    # happens). est_usd auto-prices against the embed model.
+    embed_tokens = max(0, getattr(embedder, "tokens_in", 0) - embed_before)
+    record_usage(
+        actor=actor,
+        endpoint="retrieve",
+        model=getattr(embedder, "model", None),
+        tokens_in=embed_tokens,
+        tokens_out=0,
+        latency_ms=outcome.elapsed_ms,
+        status="ok",
+        settings=settings,
+    )
 
     return RetrievalResponse(
         question=request.question,

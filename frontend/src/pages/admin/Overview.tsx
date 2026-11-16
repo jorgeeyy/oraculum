@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
 import { api } from "../../api/client";
 import type { AdminOverview } from "../../api/types";
+import Skeleton from "../../components/Skeleton";
 
 function fmt(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
@@ -33,10 +33,23 @@ export default function AdminOverviewPage() {
     );
   }
   if (!data) {
+    // Skeleton mirrors the KPI card grid so the page doesn't jump on load.
     return (
-      <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted">
-        <Loader2 size={17} className="animate-spin text-accent" />
-        Loading overview…
+      <div
+        className="grid grid-cols-2 gap-4 lg:grid-cols-4"
+        role="status"
+        aria-label="Loading overview"
+      >
+        {[0, 1, 2, 3].map((card) => (
+          <div
+            key={card}
+            className="rounded-2xl border border-line bg-panel p-4"
+          >
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="mt-3 h-7 w-24" />
+            <Skeleton className="mt-2 h-3 w-20" />
+          </div>
+        ))}
       </div>
     );
   }

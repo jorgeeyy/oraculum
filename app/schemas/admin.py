@@ -16,13 +16,22 @@ class AdminUserOut(BaseModel):
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None
+    daily_budget_usd: float | None = None
+    monthly_budget_usd: float | None = None
 
 
 class UserPatch(BaseModel):
-    """Partial update; role and/or is_active."""
+    """Partial update; role, is_active, and/or budget overrides.
+
+    Budget overrides are per-user caps in USD; null clears the override
+    (the global USAGE_*_BUDGET_USD settings apply again). A value of 0
+    disables that window for this user entirely.
+    """
 
     role: str | None = Field(default=None, pattern="^(admin|user)$")
     is_active: bool | None = None
+    daily_budget_usd: float | None = Field(default=None, ge=0)
+    monthly_budget_usd: float | None = Field(default=None, ge=0)
 
 
 class PasswordResetOut(BaseModel):
@@ -49,14 +58,45 @@ class OverviewResponse(BaseModel):
 class UsageDay(BaseModel):
     day: str | None
     answers: int
+    # Ledger columns (usage_events); zero when the day had no spend rows.
+    requests: int = 0
+    spend_usd: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+
+class UsageRollup(BaseModel):
+    """Spend grouped by account or model over the window."""
+
+    key: str  # email or model name; "unattributed" for NULL ledger rows
+    requests: int
+    spend_usd: float
+    tokens_in: int
+    tokens_out: int
 
 
 class UsageResponse(BaseModel):
-    """Chat usage proxy over chat_messages (token spend lands in WS-5)."""
+    """Usage proxy: answers/feedback (transcript) + spend (usage_events)."""
 
     days: int
     daily: list[UsageDay]
     totals: dict
+    by_user: list[UsageRollup] = []
+    by_model: list[UsageRollup] = []
+    spend_usd: float = 0.0  # window spend (sum of daily)
+
+
+class MyUsageResponse(BaseModel):
+    """One account's own spend: window rollups + budget state (GET /usage/me)."""
+
+    days: int
+    daily: list[UsageDay]
+    totals: dict
+    spend_usd: float
+    daily_budget_usd: float | None
+    monthly_budget_usd: float | None
+    daily_spend_usd: float
+    monthly_spend_usd: float
 
 
 class FeedbackItem(BaseModel):

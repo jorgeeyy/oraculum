@@ -10,6 +10,7 @@ from app.db.models import (
     ChatMessage,
     Conversation,
     Document,
+    UsageEvent,
     User,
     UserSession,
 )
@@ -30,6 +31,10 @@ class _Unscoped:
 
 
 UNSCOPED = _Unscoped()
+
+# Sentinel: "field absent from a PATCH payload" (vs an explicit null, which
+# clears a per-user budget override).
+_UNSET = object()
 
 # Owner scope for document queries: a user id (shared corpus + that user's
 # uploads), None (shared corpus only), or UNSCOPED (no filter at all).
@@ -809,8 +814,14 @@ def update_user(
     *,
     role: str | None = None,
     is_active: bool | None = None,
+    daily_budget_usd: float | None | object = _UNSET,
+    monthly_budget_usd: float | None | object = _UNSET,
 ) -> User | None:
-    """Patch role/is_active; None when the user does not exist."""
+    """Patch role/is_active/budget overrides; None when the user is missing.
+
+    Budgets default to a sentinel so PATCH can distinguish "not in the
+    payload" (leave alone) from an explicit null (clear the override).
+    """
     user = session.get(User, user_id)
     if user is None:
         return None
@@ -818,6 +829,10 @@ def update_user(
         user.role = role
     if is_active is not None:
         user.is_active = is_active
+    if daily_budget_usd is not _UNSET:
+        user.daily_budget_usd = daily_budget_usd  # type: ignore[assignment]
+    if monthly_budget_usd is not _UNSET:
+        user.monthly_budget_usd = monthly_budget_usd  # type: ignore[assignment]
     session.commit()
     session.refresh(user)
     return user
@@ -835,13 +850,45 @@ def revoke_user_sessions(session: Session, user_id: uuid.UUID) -> int:
     return result.rowcount or 0
 
 
-def usage_daily(session: Session, *, days: int) -> list[dict]:
-    """Assistant answers per UTC day, newest last (chat usage proxy).
+def usage_spend_daily(
+    session: Session, *, days: int, user_id: uuid.UUID | None = None
+) -> dict[str, dict]:
+    """usage_events rolled up per UTC day -> {day: ledger counters}.
 
-    Built over chat_messages because token/spend columns land with
-    usage_events in WS-5; the shape (day/count) is what the dashboard
-    chart consumes either way. Returns the most recent `days` buckets,
-    oldest first (chart order).
+    The cost ledger's view of a day: requests, estimated spend, tokens.
+    Scoped to one user when given (the /usage/me rollup); otherwise the
+    whole corpus. Returns the most recent `days` buckets keyed by day.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    day = func.date_trunc("day", UsageEvent.created_at)
+    stmt = select(
+        day,
+        func.count(UsageEvent.id),
+        func.coalesce(func.sum(UsageEvent.est_usd), 0.0),
+        func.coalesce(func.sum(UsageEvent.tokens_in), 0),
+        func.coalesce(func.sum(UsageEvent.tokens_out), 0),
+    ).where(UsageEvent.created_at >= since)
+    if user_id is not None:
+        stmt = stmt.where(UsageEvent.user_id == user_id)
+    stmt = stmt.group_by(day).order_by(day.desc()).limit(days)
+    return {
+        bucket.strftime("%Y-%m-%d"): {
+            "requests": requests,
+            "spend_usd": round(float(spend or 0.0), 6),
+            "tokens_in": int(tokens_in or 0),
+            "tokens_out": int(tokens_out or 0),
+        }
+        for bucket, requests, spend, tokens_in, tokens_out in session.execute(stmt).all()
+        if bucket is not None
+    }
+
+
+def usage_daily(session: Session, *, days: int) -> list[dict]:
+    """Assistant answers + ledger spend per UTC day, oldest first (chart order).
+
+    Answers come from chat_messages (the persistent transcript); requests/
+    spend/tokens come from usage_events (the cost ledger). A day missing
+    one side still appears, reporting zeros for it.
     """
     day = func.date_trunc("day", ChatMessage.created_at)
     stmt = (
@@ -851,19 +898,33 @@ def usage_daily(session: Session, *, days: int) -> list[dict]:
         .order_by(day.desc())
         .limit(days)
     )
-    rows = list(session.execute(stmt).all())
-    rows.reverse()  # newest-window fetched desc; charts read ascending
+    answers_by_day = {
+        bucket.strftime("%Y-%m-%d"): count
+        for bucket, count in session.execute(stmt).all()
+        if bucket is not None
+    }
+    spend_by_day = usage_spend_daily(session, days=days)
+    merged = sorted(set(answers_by_day) | set(spend_by_day))
     return [
         {
-            "day": bucket.strftime("%Y-%m-%d") if bucket else None,
-            "answers": count,
+            "day": key,
+            "answers": answers_by_day.get(key, 0),
+            "requests": spend_by_day.get(key, {}).get("requests", 0),
+            "spend_usd": spend_by_day.get(key, {}).get("spend_usd", 0.0),
+            "tokens_in": spend_by_day.get(key, {}).get("tokens_in", 0),
+            "tokens_out": spend_by_day.get(key, {}).get("tokens_out", 0),
         }
-        for bucket, count in rows
+        for key in merged
     ]
 
 
-def usage_totals(session: Session) -> dict:
-    """Corpus-wide chat/feedback counters for the admin overview."""
+def usage_totals(session: Session, *, user_id: uuid.UUID | None = None) -> dict:
+    """Lifetime counters: chat/feedback (transcript) + spend (ledger).
+
+    Ledger columns are scoped to one user when given (account page);
+    the transcript counters stay corpus-wide in that case (feedback has
+    no per-user meaning here).
+    """
     answers = session.scalar(
         select(func.count(ChatMessage.id)).where(ChatMessage.role == "assistant")
     ) or 0
@@ -877,7 +938,91 @@ def usage_totals(session: Session) -> dict:
             ChatMessage.role == "assistant", ChatMessage.feedback == "down"
         )
     ) or 0
-    return {"answers": answers, "feedback_up": ups, "feedback_down": downs}
+    spend_stmt = select(
+        func.count(UsageEvent.id),
+        func.coalesce(func.sum(UsageEvent.est_usd), 0.0),
+        func.coalesce(func.sum(UsageEvent.tokens_in), 0),
+        func.coalesce(func.sum(UsageEvent.tokens_out), 0),
+    )
+    if user_id is not None:
+        spend_stmt = spend_stmt.where(UsageEvent.user_id == user_id)
+    requests, spend, tokens_in, tokens_out = session.execute(spend_stmt).one()
+    return {
+        "answers": answers,
+        "feedback_up": ups,
+        "feedback_down": downs,
+        "requests": int(requests or 0),
+        "spend_usd": round(float(spend or 0.0), 6),
+        "tokens_in": int(tokens_in or 0),
+        "tokens_out": int(tokens_out or 0),
+    }
+
+
+def usage_by_user(session: Session, *, days: int) -> list[dict]:
+    """Per-account spend in the window, spendiest first.
+
+    user_id/email NULL = unattributed ledger rows (API-key/local mode, or
+    an account deleted after the spend).
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    stmt = (
+        select(
+            UsageEvent.user_id,
+            User.email,
+            func.count(UsageEvent.id),
+            func.coalesce(func.sum(UsageEvent.est_usd), 0.0),
+            func.coalesce(func.sum(UsageEvent.tokens_in), 0),
+            func.coalesce(func.sum(UsageEvent.tokens_out), 0),
+        )
+        .join(User, User.id == UsageEvent.user_id, isouter=True)
+        .where(UsageEvent.created_at >= since)
+        .group_by(UsageEvent.user_id, User.email)
+        .order_by(func.sum(UsageEvent.est_usd).desc(), func.count(UsageEvent.id).desc())
+    )
+    return [
+        {
+            "user_id": str(user_id) if user_id else None,
+            "email": email,
+            "requests": requests,
+            "spend_usd": round(float(spend or 0.0), 6),
+            "tokens_in": int(tokens_in or 0),
+            "tokens_out": int(tokens_out or 0),
+        }
+        for user_id, email, requests, spend, tokens_in, tokens_out in session.execute(
+            stmt
+        ).all()
+    ]
+
+
+def usage_by_model(session: Session, *, days: int) -> list[dict]:
+    """Per-model spend in the window, spendiest first.
+
+    model NULL = requests whose model was never recorded (should not
+    happen; surfaced so the aggregate always reconciles with totals).
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    stmt = (
+        select(
+            UsageEvent.model,
+            func.count(UsageEvent.id),
+            func.coalesce(func.sum(UsageEvent.est_usd), 0.0),
+            func.coalesce(func.sum(UsageEvent.tokens_in), 0),
+            func.coalesce(func.sum(UsageEvent.tokens_out), 0),
+        )
+        .where(UsageEvent.created_at >= since)
+        .group_by(UsageEvent.model)
+        .order_by(func.sum(UsageEvent.est_usd).desc(), func.count(UsageEvent.id).desc())
+    )
+    return [
+        {
+            "model": model,
+            "requests": requests,
+            "spend_usd": round(float(spend or 0.0), 6),
+            "tokens_in": int(tokens_in or 0),
+            "tokens_out": int(tokens_out or 0),
+        }
+        for model, requests, spend, tokens_in, tokens_out in session.execute(stmt).all()
+    ]
 
 
 def list_audit_events(session: Session, *, limit: int = 100) -> list[dict]:

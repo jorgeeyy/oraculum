@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, FileText, Trash2 } from "lucide-react";
+import { ArrowLeft, FileText, Trash2, Upload } from "lucide-react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { ApiError, api } from "../api/client";
 import type { DocumentContentResponse, DocumentRecord } from "../api/types";
+import Skeleton from "../components/Skeleton";
 import UploadDropzone from "../components/UploadDropzone";
 
 interface Props {
@@ -221,14 +222,39 @@ export default function Documents({
 
         <div className="mt-6">
           {loading && (
-            <p className="py-6 text-center text-sm text-muted">
-              Loading documents…
-            </p>
+            /* Skeleton rows match the real list (icon + two lines + action)
+               so the layout doesn't jump when data lands. */
+            <div
+              className="overflow-hidden rounded-2xl border border-line bg-surface"
+              role="status"
+              aria-label="Loading documents"
+            >
+              {[0, 1, 2].map((row) => (
+                <div
+                  key={row}
+                  className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-b-0"
+                >
+                  <Skeleton className="h-9 w-9 shrink-0 rounded-lg" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-1/3" />
+                    <Skeleton className="h-3 w-1/5" />
+                  </div>
+                  <Skeleton className="h-4 w-4" />
+                </div>
+              ))}
+            </div>
           )}
           {!loading && documents.length === 0 && !bannerError && (
-            <p className="py-6 text-center text-sm text-muted">
-              No documents yet — upload one above.
-            </p>
+            <div className="flex flex-col items-center rounded-2xl border border-dashed border-line px-6 py-10 text-center">
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent/10 text-accent">
+                <Upload size={18} strokeWidth={2} />
+              </span>
+              <p className="mt-3 text-sm font-medium">No documents yet</p>
+              <p className="mt-1 max-w-sm text-xs leading-5 text-muted">
+                Upload a PDF, Markdown, or text file above — indexing runs in
+                the background, then you can ask questions about it in Chat.
+              </p>
+            </div>
           )}
 
           {documents.length > 0 && (

@@ -30,6 +30,8 @@ export class ApiError extends Error {
     message: string,
     readonly retryAfterSeconds?: number,
     readonly documentId?: string,
+    /** Structured `detail.code` when the server sends one (e.g. budget 403). */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -44,8 +46,8 @@ const unauthorizedHandlers = new Set<UnauthorizedHandler>();
 
 /**
  * Subscribe to mid-session 401s (expired/revoked session, key removed).
- * The auth guard clears the user so its redirect kicks in; WS-8 toasts can
- * subscribe too. Returns an unsubscribe function.
+ * The auth guard clears the user so its redirect kicks in; the global toast
+ * host also subscribes to explain the redirect. Returns an unsubscribe fn.
  */
 export function onUnauthorized(handler: UnauthorizedHandler): () => void {
   unauthorizedHandlers.add(handler);
@@ -54,6 +56,29 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
 
 function notifyUnauthorized(): void {
   for (const handler of unauthorizedHandlers) handler();
+}
+
+// ------------------------------------------- usage-budget subscribers (WS-5)
+
+type UsageLimitHandler = (message: string) => void;
+
+const usageLimitHandlers = new Set<UsageLimitHandler>();
+
+/**
+ * Subscribe to budget refusals (403 `usage_limit_exceeded`) from ANY request.
+ * The chat surface keeps its inline banner; the global toast host listens
+ * here so the governance state is visible no matter which screen triggered
+ * it. Returns an unsubscribe function.
+ */
+export function onUsageLimitExceeded(
+  handler: UsageLimitHandler,
+): () => void {
+  usageLimitHandlers.add(handler);
+  return () => void usageLimitHandlers.delete(handler);
+}
+
+function notifyUsageLimit(message: string): void {
+  for (const handler of usageLimitHandlers) handler(message);
 }
 
 const API_KEY_STORAGE = "rag.apiKey";
@@ -88,6 +113,7 @@ export function newRequestId(): string {
 function extractDetail(body: unknown): {
   message: string;
   documentId?: string;
+  code?: string;
 } {
   if (typeof body === "string") return { message: body };
   if (body && typeof body === "object") {
@@ -103,7 +129,11 @@ function extractDetail(body: unknown): {
             : "Request failed.";
       const documentId =
         typeof detail.document_id === "string" ? detail.document_id : undefined;
-      return { message, documentId };
+      // Structured detail codes (e.g. `usage_limit_exceeded` on a budget
+      // 403) let callers style/handle failures instead of parsing prose.
+      const code =
+        typeof detail.code === "string" ? detail.code : undefined;
+      return { message, documentId, code };
     }
     if (Array.isArray(obj.detail)) {
       // FastAPI validation errors: [{loc, msg, ...}, ...]
@@ -121,7 +151,7 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
   } catch {
     /* non-JSON error body */
   }
-  const { message, documentId } = extractDetail(body);
+  const { message, documentId, code } = extractDetail(body);
   const retryHeader = response.headers.get("Retry-After");
   const retryAfter = retryHeader ? Number(retryHeader) : undefined;
   return new ApiError(
@@ -129,6 +159,7 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
     message,
     Number.isFinite(retryAfter) ? retryAfter : undefined,
     documentId,
+    code,
   );
 }
 
@@ -138,6 +169,9 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("X-Request-ID", newRequestId());
+  // CSRF defense: cookie-authenticated mutations must carry this custom
+  // header (see app/services/security.py). Harmless on GETs.
+  headers.set("X-Requested-With", "XMLHttpRequest");
   const key = getApiKey();
   if (key) headers.set("X-API-Key", key);
   if (init.body && !headers.has("Content-Type")) {
@@ -154,6 +188,7 @@ export async function apiFetch<T>(
   if (!response.ok) {
     const error = await errorFromResponse(response);
     if (response.status === 401) notifyUnauthorized();
+    if (error.code === "usage_limit_exceeded") notifyUsageLimit(error.message);
     throw error;
   }
   return (await response.json()) as T;
@@ -228,6 +263,7 @@ export async function chatStream(
 ): Promise<ChatResponse> {
   const headers = new Headers();
   headers.set("X-Request-ID", newRequestId());
+  headers.set("X-Requested-With", "XMLHttpRequest"); // CSRF (cookie mutations)
   const key = getApiKey();
   if (key) headers.set("X-API-Key", key);
   headers.set("Content-Type", "application/json");
@@ -246,6 +282,7 @@ export async function chatStream(
   if (!response.ok) {
     const error = await errorFromResponse(response);
     if (response.status === 401) notifyUnauthorized();
+    if (error.code === "usage_limit_exceeded") notifyUsageLimit(error.message);
     throw error;
   }
   if (!response.body) {
@@ -307,7 +344,14 @@ export const api = {
   adminUsers: () => apiFetch<AdminUser[]>("/admin/users"),
   adminPatchUser: (
     userId: string,
-    changes: { role?: "admin" | "user"; is_active?: boolean },
+    changes: {
+      role?: "admin" | "user";
+      is_active?: boolean;
+      // Per-user budget overrides: number = cap in USD, null = clear the
+      // override (global settings apply again), 0 = disable that window.
+      daily_budget_usd?: number | null;
+      monthly_budget_usd?: number | null;
+    },
   ) => patch<AdminUser>(`/admin/users/${userId}`, changes),
   adminResetPassword: (userId: string) =>
     post<{ user_id: string; sessions_revoked: number }>(
@@ -356,6 +400,7 @@ export const api = {
     form.append("file", file);
     const headers = new Headers();
     headers.set("X-Request-ID", newRequestId());
+    headers.set("X-Requested-With", "XMLHttpRequest"); // CSRF (cookie mutations)
     const key = getApiKey();
     if (key) headers.set("X-API-Key", key);
     const response = await fetch("/documents", {
@@ -370,8 +415,8 @@ export const api = {
       } catch {
         /* ignore */
       }
-      const { message, documentId } = extractDetail(body);
-      throw new ApiError(response.status, message, undefined, documentId);
+      const { message, documentId, code } = extractDetail(body);
+      throw new ApiError(response.status, message, undefined, documentId, code);
     }
     return (await response.json()) as UploadDocumentResponse;
   },

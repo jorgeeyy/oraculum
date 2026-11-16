@@ -31,6 +31,7 @@ from app.schemas.admin import (
     PasswordResetOut,
     UsageDay,
     UsageResponse,
+    UsageRollup,
     UserPatch,
 )
 from app.services.audit import record_audit
@@ -65,6 +66,8 @@ def _user_out(user: repositories.User) -> AdminUserOut:
         is_active=user.is_active,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
+        daily_budget_usd=user.daily_budget_usd,
+        monthly_budget_usd=user.monthly_budget_usd,
     )
 
 
@@ -152,7 +155,20 @@ def patch_user(
         )
 
     updated = repositories.update_user(
-        db, parsed, role=patch.role, is_active=patch.is_active
+        db,
+        parsed,
+        role=patch.role,
+        is_active=patch.is_active,
+        daily_budget_usd=(
+            patch.daily_budget_usd
+            if "daily_budget_usd" in patch.model_fields_set
+            else repositories._UNSET
+        ),
+        monthly_budget_usd=(
+            patch.monthly_budget_usd
+            if "monthly_budget_usd" in patch.model_fields_set
+            else repositories._UNSET
+        ),
     )
     assert updated is not None  # fetched above
 
@@ -161,10 +177,21 @@ def patch_user(
         changed["role"] = patch.role
     if patch.is_active is not None:
         changed["is_active"] = patch.is_active
+    if "daily_budget_usd" in patch.model_fields_set:
+        changed["daily_budget_usd"] = patch.daily_budget_usd
+    if "monthly_budget_usd" in patch.model_fields_set:
+        changed["monthly_budget_usd"] = patch.monthly_budget_usd
+    action = (
+        "user.budget_override"
+        if patch.role is None
+        and patch.is_active is None
+        and ("daily_budget_usd" in patch.model_fields_set or "monthly_budget_usd" in patch.model_fields_set)
+        else "user.update"
+    )
     record_audit(
         db,
         request,
-        action="user.update",
+        action=action,
         target_type="user",
         target_id=str(target.id),
         detail={"email": target.email, "changes": changed},
@@ -210,10 +237,10 @@ def usage(
     db: Session = Depends(get_db_session),
     _admin: object = Depends(require_admin),
 ) -> UsageResponse:
-    """Chat usage proxy: answers/day + lifetime feedback totals.
+    """Usage over a window: answers/day + spend rollups (WS-5 ledger).
 
-    Token-spend columns arrive with usage_events in WS-5; this endpoint's
-    shape (daily buckets + totals) extends in place when they do.
+    daily merges the transcript's answers with the ledger's requests/
+    spend/tokens per UTC day; by_user/by_model rank the window's spend.
     """
     daily = repositories.usage_daily(db, days=days)
     totals = repositories.usage_totals(db)
@@ -221,6 +248,15 @@ def usage(
         days=days,
         daily=[UsageDay(**row) for row in daily],
         totals=totals,
+        by_user=[
+            UsageRollup(key=row["email"] or "unattributed", **{k: row[k] for k in ("requests", "spend_usd", "tokens_in", "tokens_out")})
+            for row in repositories.usage_by_user(db, days=days)
+        ],
+        by_model=[
+            UsageRollup(key=row["model"] or "unknown", **{k: row[k] for k in ("requests", "spend_usd", "tokens_in", "tokens_out")})
+            for row in repositories.usage_by_model(db, days=days)
+        ],
+        spend_usd=round(sum(row["spend_usd"] for row in daily), 6),
     )
 
 

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, SseParser, api, apiFetch, setApiKey } from "./client";
+import {
+  ApiError,
+  SseParser,
+  api,
+  apiFetch,
+  onUsageLimitExceeded,
+  setApiKey,
+} from "./client";
 import type { ChatResponse, StreamMeta } from "./types";
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -424,6 +431,123 @@ describe("chatStream", () => {
     const error = await capturedError(api.streamChat({ question: "q" }));
 
     expect(error.status).toBe(0);
+  });
+});
+
+// ------------------------------------- structured codes + budget bus (WS-5)
+
+describe("structured error codes", () => {
+  it("keeps detail.code and message on a budget refusal (403)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            detail: {
+              code: "usage_limit_exceeded",
+              window: "daily",
+              limit_usd: 1,
+              spent_usd: 1.25,
+              message: "The daily usage budget ($1.00) is exhausted.",
+            },
+          },
+          { status: 403 },
+        ),
+      ),
+    );
+
+    const error = await capturedError(apiFetch("/chat", { method: "POST" }));
+
+    expect(error.status).toBe(403);
+    expect(error.code).toBe("usage_limit_exceeded");
+    expect(error.message).toBe("The daily usage budget ($1.00) is exhausted.");
+  });
+
+  it("leaves code undefined for plain string details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ detail: "Document not found." }, { status: 404 }),
+      ),
+    );
+
+    const error = await capturedError(apiFetch("/documents/x"));
+
+    expect(error.code).toBeUndefined();
+    expect(error.message).toBe("Document not found.");
+  });
+
+  it("broadcasts usage_limit_exceeded to subscribers with the message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            detail: {
+              code: "usage_limit_exceeded",
+              message: "The monthly usage budget ($5.00) is exhausted.",
+            },
+          },
+          { status: 403 },
+        ),
+      ),
+    );
+
+    const received: string[] = [];
+    const stop = onUsageLimitExceeded((message) => received.push(message));
+    try {
+      await capturedError(apiFetch("/chat", { method: "POST" }));
+    } finally {
+      stop();
+    }
+
+    expect(received).toEqual([
+      "The monthly usage budget ($5.00) is exhausted.",
+    ]);
+  });
+
+  it("does not broadcast ordinary 403s (permission errors stay local)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ detail: "Admin only." }, { status: 403 }),
+      ),
+    );
+
+    const received: string[] = [];
+    const stop = onUsageLimitExceeded((message) => received.push(message));
+    try {
+      await capturedError(apiFetch("/admin/users"));
+    } finally {
+      stop();
+    }
+
+    expect(received).toEqual([]);
+  });
+
+  it("unsubscribed budget listeners stop receiving events", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          {
+            detail: {
+              code: "usage_limit_exceeded",
+              message: "The daily usage budget ($1.00) is exhausted.",
+            },
+          },
+          { status: 403 },
+        ),
+      ),
+    );
+
+    const received: string[] = [];
+    const stop = onUsageLimitExceeded((message) => received.push(message));
+    stop();
+
+    await capturedError(apiFetch("/chat", { method: "POST" }));
+
+    expect(received).toEqual([]);
   });
 });
 

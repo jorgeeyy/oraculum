@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { ArrowUp, Loader2, ThumbsDown, ThumbsUp } from "lucide-react";
 import { ApiError, api } from "../api/client";
 import type {
@@ -8,12 +9,16 @@ import type {
   Source,
 } from "../api/types";
 import EvidencePanel from "../components/EvidencePanel";
+import Skeleton from "../components/Skeleton";
 import SourceCard from "../components/SourceCard";
 
 interface ChatProps {
   onAuthRequired: () => void;
   conversationId: string | null;
   onConversationCreated: (conversationId: string) => void;
+  /** Corpus size for the first-run checklist (0 docs → onboarding). */
+  documentCount: number;
+  documentsLoading: boolean;
 }
 
 interface Message {
@@ -59,6 +64,8 @@ export default function Chat({
   onAuthRequired,
   conversationId,
   onConversationCreated,
+  documentCount,
+  documentsLoading,
 }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -231,9 +238,24 @@ export default function Chat({
       {/* Thread */}
       <div className="flex-1 overflow-y-auto">
         {loadingThread ? (
-          <div className="flex h-full items-center justify-center gap-2.5 text-sm text-muted">
-            <Loader2 size={17} className="animate-spin text-accent" />
-            Loading conversation…
+          /* Skeleton mirrors the real layout (user bubble right, answer
+             left) so opening a thread doesn't flash a bare spinner. */
+          <div
+            className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6"
+            role="status"
+            aria-label="Loading conversation"
+          >
+            <div className="flex justify-end">
+              <Skeleton className="h-11 w-2/3 rounded-3xl rounded-br-lg" />
+            </div>
+            <div className="space-y-2.5">
+              <Skeleton className="h-4 w-11/12" />
+              <Skeleton className="h-4 w-5/6" />
+              <Skeleton className="h-4 w-3/5" />
+            </div>
+            <div className="flex justify-end">
+              <Skeleton className="h-9 w-1/2 rounded-3xl rounded-br-lg" />
+            </div>
           </div>
         ) : messages.length === 0 ? (
           <div className="flex min-h-full flex-col items-center justify-center px-4 py-12">
@@ -248,6 +270,38 @@ export default function Chat({
               retrieved evidence — if the corpus doesn't cover it, you'll get an
               explicit refusal instead of a guess.
             </p>
+
+            {/* First-run checklist: no documents yet → nothing to cite. */}
+            {!documentsLoading && documentCount === 0 && (
+              <div className="mt-6 w-full max-w-2xl rounded-2xl border border-accent/30 bg-accent/[0.06] px-4 py-3.5 text-left">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-accent">
+                  Get started
+                </p>
+                <ol className="mt-2.5 space-y-2 text-sm">
+                  <li className="flex items-center gap-2.5 text-ink">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent text-[11px] font-bold text-on-accent">
+                      1
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      Upload a document so there's evidence to cite
+                    </span>
+                    <Link
+                      to="/documents"
+                      className="shrink-0 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs font-medium text-muted transition-colors hover:text-ink"
+                    >
+                      Upload
+                    </Link>
+                  </li>
+                  <li className="flex items-center gap-2.5 text-faint">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface text-[11px] font-bold ring-1 ring-line">
+                      2
+                    </span>
+                    Ask your first question
+                  </li>
+                </ol>
+              </div>
+            )}
+
             <div className="mt-8 grid w-full max-w-2xl gap-2 sm:grid-cols-3">
               {SUGGESTIONS.map((s) => (
                 <button

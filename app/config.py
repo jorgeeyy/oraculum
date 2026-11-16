@@ -92,6 +92,29 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60  # 0 disables rate limiting
     api_key: str | None = None  # when set, all non-health endpoints require it
 
+    # Request hardening (WS-4). Declared request bodies above the cap are
+    # refused with 413 before parsing; per-file upload bounds are enforced
+    # separately while streaming (max_file_size_bytes). 12 MB leaves slack
+    # over the 10 MB upload limit for multipart framing.
+    max_request_body_bytes: int = 12 * 1024 * 1024
+    # Serve /docs, /redoc and /openapi.json. Set DOCS_ENABLED=false in
+    # production so the API surface is not advertised; dev keeps it true
+    # (the user tests through Swagger).
+    docs_enabled: bool = True
+
+    # Cost governance (WS-5). Global default budgets in USD; per-user
+    # overrides live on the users table (admin-managed). None/0 disables
+    # that window entirely. Enforcement only guards /chat* (the LLM spend
+    # path) and fails open on ledger errors - telemetry never blocks.
+    usage_daily_budget_usd: float | None = None
+    usage_monthly_budget_usd: float | None = None
+    # Fraction of a budget that flips the X-Usage-Warn header on.
+    usage_warn_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
+    # Append one usage_events row per chat/retrieve/ingest call. Set
+    # USAGE_LEDGER_ENABLED=false to stop writing (tests pin it false so the
+    # suite never leaves rows in the developer's database).
+    usage_ledger_enabled: bool = True
+
     # Identity and accounts (pre-Phase-7 WS-3)
     # Self-rolled email+password accounts with DB-backed session cookies.
     # The API_KEY is the ADMIN credential: a request bearing it acts as the

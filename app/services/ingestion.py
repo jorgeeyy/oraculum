@@ -13,6 +13,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.auth import AuthActor
 from app.config import Settings, get_settings
 from app.db import repositories
 from app.db.models import Document
@@ -32,6 +33,7 @@ from app.services.errors import (
 from app.services.openai_client import get_openai_client
 from app.services.storage import DocumentStorage
 from app.services.text_extraction import extract_pages
+from app.services.usage import record_usage
 from app.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ def ingest_document(
     store: VectorStore,
     storage: DocumentStorage,
     bm25: Bm25Index | None = None,
+    settings: Settings | None = None,
 ) -> None:
     """Run the full pipeline for one document. Never raises.
 
@@ -73,13 +76,20 @@ def ingest_document(
     so the UI can surface it; a document deleted mid-flight is skipped and
     its vectors cleaned up. A failed search-index write fails the document
     and rolls back its vectors - a `failed` row never stays retrievable.
+    `settings` comes from the request DI when called from an upload (so the
+    ledger kill-switch is honored); recovery falls back to the environment.
     """
     if bm25 is None:
         bm25 = get_bm25_index()
     try:
         with _INGEST_LOCK:
             _ingest(
-                document_id, embedder=embedder, store=store, storage=storage, bm25=bm25
+                document_id,
+                embedder=embedder,
+                store=store,
+                storage=storage,
+                bm25=bm25,
+                settings=settings,
             )
     except Exception:
         # Session could not even be opened (DB down): the row stays pending
@@ -132,6 +142,7 @@ def _ingest(
     store: VectorStore,
     storage: DocumentStorage,
     bm25: Bm25Index,
+    settings: Settings | None = None,
 ) -> None:
     session = _open_session()
     try:
@@ -172,6 +183,7 @@ def _ingest(
             return
 
         try:
+            embed_before = getattr(embedder, "tokens_in", 0)
             vectors = embedder.embed([chunk.text for chunk in chunks])
             # The document may have been deleted while embeddings were in
             # flight; don't resurrect it with fresh vectors.
@@ -228,7 +240,7 @@ def _ingest(
             _cleanup_orphan_index(document_id, store, bm25)
             return
 
-        settings = get_settings()
+        settings = settings or get_settings()
         repositories.complete_document(
             session,
             document_id,
@@ -236,6 +248,31 @@ def _ingest(
             embedding_model=embedder.model,
             chunk_size_tokens=settings.chunk_size_tokens,
             chunk_overlap_tokens=settings.chunk_overlap_tokens,
+        )
+        # Ledger: ingestion is the corpus's biggest embedding spend. Attributed
+        # to the document owner when there is one (shared corpus = unscoped).
+        # The owner is read from the row itself: DocumentRecord (the API
+        # shape) intentionally exposes no ownership metadata.
+        embed_tokens = max(0, getattr(embedder, "tokens_in", 0) - embed_before)
+        owner = session.execute(
+            select(Document.owner_user_id).where(
+                Document.id == uuid.UUID(document_id)
+            )
+        ).scalar_one_or_none()
+        record_usage(
+            actor=AuthActor(
+                mode="session" if owner else "api_key",
+                role="user",
+                api_key_hash=None,
+                user_id=owner,
+            ),
+            endpoint="ingest",
+            model=embedder.model,
+            tokens_in=embed_tokens,
+            tokens_out=0,
+            latency_ms=None,
+            status="ok",
+            settings=settings,
         )
         # Corpus changed: wipe the semantic answer cache (hygiene; the
         # fingerprint check is what actually invalidates stale entries).

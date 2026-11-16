@@ -22,6 +22,7 @@ import { api } from "./api/client";
 import { useAuth } from "./auth/AuthProvider";
 import type { ConversationSummary, DocumentRecord } from "./api/types";
 import HealthBadge from "./components/HealthBadge";
+import { pushToast } from "./components/toasts";
 import { useDocuments } from "./hooks/useDocuments";
 import Chat from "./tabs/Chat";
 import Documents from "./tabs/Documents";
@@ -177,7 +178,13 @@ export default function App() {
     try {
       await api.deleteConversation(id);
     } catch {
-      return; // keep the item in the list
+      // Keep the item in the list and say why — a silent failure here
+      // used to look like the delete simply did nothing.
+      pushToast({
+        kind: "error",
+        message: "Couldn't delete that conversation. Try again.",
+      });
+      return;
     }
     setConversations((prev) => prev.filter((c) => c.id !== id));
     if (activeId === id) {
@@ -550,6 +557,8 @@ export default function App() {
               onAuthRequired={() => routerNavigate("/login")}
               conversationId={activeId}
               onConversationCreated={handleConversationCreated}
+              documentCount={docList.length}
+              documentsLoading={docsLoading}
             />
           )}
           {tab === "documents" && (

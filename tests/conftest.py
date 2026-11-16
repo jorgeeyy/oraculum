@@ -256,10 +256,19 @@ def client(
     # cache flag from the developer's .env; cache tests opt in explicitly.
     # auth_allow_anonymous=True keeps the suite's pre-login request style
     # (the required-login default is covered by dedicated identity tests).
+    # The usage ledger is off so the suite never leaves rows in the
+    # developer's database, and budgets are pinned None so a budget set in
+    # .env can never 403 an unrelated chat test - ledger/budget tests opt in.
     app.dependency_overrides[get_settings] = lambda: Settings(
-        chat_cache_enabled=False, auth_allow_anonymous=True
+        chat_cache_enabled=False,
+        auth_allow_anonymous=True,
+        usage_ledger_enabled=False,
+        usage_daily_budget_usd=None,
+        usage_monthly_budget_usd=None,
     )
-    with TestClient(app) as test_client:
+    with TestClient(
+        app, headers={"X-Requested-With": "XMLHttpRequest"}
+    ) as test_client:
         test_client.storage = storage  # type: ignore[attr-defined]
         yield test_client
 
@@ -293,11 +302,19 @@ def client_with_settings(
         # dedicated identity tests cover the required-login default.
         merged = (
             get_settings().model_dump()
-            | {"chat_cache_enabled": False, "auth_allow_anonymous": True}
+            | {
+                "chat_cache_enabled": False,
+                "auth_allow_anonymous": True,
+                "usage_ledger_enabled": False,
+                "usage_daily_budget_usd": None,
+                "usage_monthly_budget_usd": None,
+            }
             | settings_overrides
         )
         app.dependency_overrides[get_settings] = lambda: Settings(**merged)
-        return TestClient(app)
+        # Mirror the SPA: every request carries the CSRF custom header.
+        # Dedicated CSRF tests build their own header-less TestClient.
+        return TestClient(app, headers={"X-Requested-With": "XMLHttpRequest"})
 
     return factory
 
@@ -328,6 +345,7 @@ def db_conn() -> Iterator:
         ChatMessage,
         Conversation,
         Document,
+        UsageEvent,
         User,
         UserSession,
     )
@@ -342,6 +360,7 @@ def db_conn() -> Iterator:
         existing_user_ids = set(conn.execute(select(User.id)).scalars())
         existing_session_ids = set(conn.execute(select(UserSession.id)).scalars())
         existing_audit_ids = set(conn.execute(select(AuditEvent.id)).scalars())
+        existing_usage_ids = set(conn.execute(select(UsageEvent.id)).scalars())
 
     yield engine
 
@@ -381,4 +400,12 @@ def db_conn() -> Iterator:
             conn.execute(delete(AuditEvent).where(AuditEvent.id.not_in(existing_audit_ids)))
         else:
             conn.execute(delete(AuditEvent))
+        # Usage ledger rows are written fail-open by chat/retrieve/ingest;
+        # tests that opt the ledger on must not leave rows behind.
+        if existing_usage_ids:
+            conn.execute(
+                delete(UsageEvent).where(UsageEvent.id.not_in(existing_usage_ids))
+            )
+        else:
+            conn.execute(delete(UsageEvent))
     engine.dispose()

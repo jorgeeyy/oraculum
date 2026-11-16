@@ -46,6 +46,10 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     role: Mapped[str] = mapped_column(String(16), default="user")
     is_active: Mapped[bool] = mapped_column(default=True)
+    # Per-user budget overrides (WS-5); NULL = the global
+    # USAGE_DAILY/MONTHLY_BUDGET_USD settings apply.
+    daily_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    monthly_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -149,6 +153,36 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class UsageEvent(Base):
+    """One token-spending request (WS-5 cost governance).
+
+    Written fail-open after every chat/retrieve call from the counters the
+    pipeline already keeps; a failed write never breaks the request. NULL
+    user_id = unattributed spend (API-key/local mode or user deleted —
+    SET NULL so the ledger outlives accounts). est_usd is an estimate from
+    app/services/pricing.py; unknown models record NULL, never a fake 0.
+    """
+
+    __tablename__ = "usage_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # "chat" / "chat_stream" / "retrieve" — the endpoint that spent.
+    endpoint: Mapped[str] = mapped_column(String(32), index=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    est_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )

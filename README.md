@@ -64,7 +64,17 @@ Copy-Item .env.example .env
 | `CHAT_QUERY_EXPANSION` | Multi-query expansion: rephrase the query into variants and fuse all rankings (default `false` — off until eval-validated) |
 | `CHAT_QUERY_EXPANSION_VARIANTS` | Expansion variants per query when enabled (default `2`; `1`–`5`) |
 | `RATE_LIMIT_PER_MINUTE` | Per-IP cap on `/chat` + `/retrieve` (default `60`; `0` disables) |
-| `API_KEY` | When set, `/documents`, `/retrieve`, `/chat` require this key (unset = open) |
+| `API_KEY` | When set, scripts/curl must send `X-API-Key: <key>` (401 otherwise). Browser users instead sign in — see *Identity and access* below |
+| `AUTH_ALLOW_ANONYMOUS` | Opt-in open mode for offline tooling: no key and no session passes (default `false` — sign-in required; never enable in a multi-user deployment) |
+| `AUTH_ALLOW_REGISTRATION` | Whether `POST /auth/register` accepts new signups (default `true`) |
+| `AUTH_SESSION_TTL_DAYS` | Login session lifetime in days (default `30`) |
+| `AUTH_COOKIE_SECURE` | Send the session cookie over HTTPS only (default `false`; set `true` behind TLS) |
+| `AUTH_LOGIN_RATE_LIMIT_PER_MINUTE` | Per-IP **and** per-email cap on `/auth/login` (default `5`; `0` disables) |
+| `DOCS_ENABLED` | Serve `/docs`, `/redoc` and `/openapi.json` (default `true`; set `false` on public deployments) |
+| `USAGE_LEDGER_ENABLED` | Append one `usage_events` cost row per chat/retrieve/ingest request (default `true`; ledger failures never break a request) |
+| `USAGE_DAILY_BUDGET_USD` | Global default daily spend cap in USD (default unset = no cap) |
+| `USAGE_MONTHLY_BUDGET_USD` | Global default monthly spend cap in USD (default unset = no cap) |
+| `USAGE_WARN_RATIO` | Fraction of a budget past which chat responses carry `X-Usage-Warn` (default `0.8`) |
 | `LOG_FILE` | Rotating application log file (default `data/logs/oraculum.log`; set empty to disable) |
 
 `.env` is git-ignored. Never commit real keys.
@@ -102,6 +112,21 @@ uv run alembic current
 uv run alembic history
 ```
 
+Applied migration chain (newest last — run `uv run alembic upgrade head`
+after pulling to bring a database up to it):
+
+| Revision | Change |
+|---|---|
+| `2676f16ec739` | `documents` table |
+| `bbfc9285daca` | embedding provenance columns |
+| `d4f8a2c1e6b7` | `documents.content_hash` (idempotent dedup) |
+| `f3a9c2d8e1b4` | `conversations` + `chat_messages` (chat history) |
+| `a1c7e9f4b2d8` | `chat_messages.feedback` column |
+| `c7d2e5a91f3b` | identity: `users`, `sessions`, `conversations.user_id` |
+| `e5a8f3c1d9b6` | `audit_events` (admin action trail) |
+| `a9d4e2b7c5f1` | `documents.owner_user_id` (per-user document scoping) |
+| `b7f3d9a2c4e8` | `usage_events` + per-user budget overrides (cost governance) |
+
 ## Run
 
 ```powershell
@@ -138,19 +163,33 @@ Set `LOG_FILE=` (empty) in `.env` to disable file logging.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/auth/config` | Public auth configuration (`auth_required`, `registration_enabled`) — drives the SPA guard |
+| `POST` | `/auth/register` | Create an account (`role: user`; admins are seeded only via `scripts/create_admin.py`) |
+| `POST` | `/auth/login` | Sign in → session cookie |
+| `POST` | `/auth/logout` | Revoke the current session and clear the cookie |
+| `GET` | `/auth/me` | The signed-in account (`401` when signed out) |
 | `POST` | `/documents` | Upload a PDF/TXT/Markdown file; validates synchronously, then extracts/chunks/embeds/indexes it in the background (`202` + `status: pending`; poll `GET /documents` for progress) |
-| `GET` | `/documents` | List ingested documents and their statuses |
+| `GET` | `/documents` | List ingested documents and their statuses (scoped to your uploads + the shared corpus) |
 | `GET` | `/documents/{id}` | Document record, ingestion status, and indexing config used |
 | `GET` | `/documents/{id}/chunks` | Re-chunk a stored document with the current chunking configuration |
+| `GET` | `/documents/{id}/content` | Extracted page-level text (drives the in-app document viewer) |
+| `GET` | `/documents/{id}/file` | Raw stored file bytes (drives the PDF viewer iframe) |
 | `DELETE` | `/documents/{id}` | Remove a document's vectors, stored file, and record |
 | `POST` | `/retrieve` | Semantic search: question in, top-k chunks out with scores and citations |
 | `POST` | `/chat` | Grounded Q&A: short answer with resolved source citations, or an explicit insufficient-evidence refusal; pass `conversation_id` to persist the exchange |
 | `POST` | `/chat/stream` | Same request contract as `/chat`, answered as Server-Sent Events (`meta` → `delta`* → `done` \| `error`) |
-| `PUT` | `/chat/messages/{id}/feedback` | Thumbs on one stored answer: `{"rating": "up" \| "down" \| null}` (`null` clears); 404 outside the API-key scope |
+| `PUT` | `/chat/messages/{id}/feedback` | Thumbs on one stored answer: `{"rating": "up" \| "down" \| null}` (`null` clears); 404 outside your chat scope |
 | `GET` | `/conversations` | List saved chats (id, title, message count, activity) |
 | `GET` | `/conversations/{id}` | Full thread: title plus every stored message in order |
 | `PATCH` | `/conversations/{id}` | Rename a chat |
 | `DELETE` | `/conversations/{id}` | Delete a chat and all of its messages |
+| `GET` | `/usage/me` | Your own cost ledger: window/lifetime spend + tokens, effective budgets (404 for API-key/local callers) |
+| `GET` | `/admin/overview` | *(admin)* Health, version, git commit, corpus/accounts counts, cache flag |
+| `GET` | `/admin/users` · `PATCH /admin/users/{id}` | *(admin)* Accounts; role/activation changes and per-user budget overrides (audited) |
+| `POST` | `/admin/users/{id}/password-reset` | *(admin)* Force a password reset; revokes all live sessions |
+| `GET` | `/admin/usage` | *(admin)* Cost rollups: daily spend, totals, `by_user`, `by_model` over `?days=N` |
+| `GET` | `/admin/feedback` | *(admin)* Recent 👍/👎 with answer context |
+| `GET` | `/admin/audit` | *(admin)* Append-only audit trail of admin/security actions |
 | `GET` | `/health` | Process liveness only |
 | `GET` | `/health/ready` | Dependency readiness: Postgres + vector store must respond (503 if down) |
 
@@ -334,43 +373,115 @@ Reranking and an LLM-as-judge eval scorer remain deferred (see ROADMAP).
   never a duplicate record. Identical bytes that previously failed are
   retried in place (same row, error cleared).
 - **Rate limiting** — per-IP fixed window on `/chat` and `/retrieve`
-  (default 60/min, HTTP 429 + `Retry-After`); `/documents` and health are exempt.
-- **Optional API-key auth** — set `API_KEY` and every non-health endpoint
-  requires `Authorization: Bearer <key>` or `X-API-Key: <key>` (401 otherwise).
-  Unset = local development behaves exactly as before.
+  (default 60/min, HTTP 429 + `Retry-After`); `/documents`, `/auth/login`
+  (its own per-IP + per-email limit), and health have separate rules.
 - **Dependency-aware readiness** — `/health` is process liveness only;
   `/health/ready` checks Postgres and the vector store and returns 503 when
   a critical dependency is down.
 - **Chat history** — exchanges are saved server-side in Postgres when the
   `/chat` request includes a `conversation_id` (`null` creates a new chat,
   a UUID appends, omission keeps the endpoint stateless for scripts).
-  Each chat is scoped to a SHA-256 fingerprint of the API key (or a single
-  local scope when no key is configured), so changing `API_KEY` hides the
-  previous key's history. Nothing is auto-purged; chats are deletable
-  individually via `DELETE /conversations/{id}`.
+  Each chat is scoped to its owner (see identity below); API-key history
+  is keyed on a SHA-256 fingerprint of the key, so changing `API_KEY`
+  hides the previous key's history. Nothing is auto-purged; chats are
+  deletable individually via `DELETE /conversations/{id}`.
+
+### Identity and access
+
+Browser users sign in; scripts and evals keep using the raw API key.
+
+- **Session auth (default)** — `POST /auth/login` sets an HttpOnly `session`
+  cookie (Argon2-hashed passwords in Postgres, 30-day TTL, revocable). The
+  SPA checks `GET /auth/config` on load and redirects everything to `/login`
+  (`auth_required` is `true` by default: `AUTH_ALLOW_ANONYMOUS=false` and it
+  stays that way in any multi-user deployment — anonymous callers are pure
+  token-spend risk).
+- **API-key mode** — with `API_KEY` set, `X-API-Key` authenticates scripts
+  exactly as before: key-auth requests touch **no database** (no budget
+  check, no scoping DB reads on the chat path), so curl/evals keep their
+  pre-identity behavior byte-for-byte.
+- **Account creation** — `POST /auth/register` always creates `role: user`.
+  Admins are seeded only from the terminal via
+  `uv run python scripts/create_admin.py <email>` (promotes an existing
+  user or creates one). Admin routes are role-gated and every mutation is
+  written to the append-only `audit_events` trail.
+- **Per-user scoping** — uploads are stamped with the owner; a document is
+  visible to its owner plus the shared corpus, never to other users (reads,
+  deletes, dedup, retrieval, and even the answer cache are all owner-bucketed —
+  a foreign document id is indistinguishable from a missing one, 404 on
+  every surface). Session admins see the whole corpus as an operational view.
+- **Swagger** — `/docs` carries OpenAPI security schemes for the session
+  cookie and `X-API-Key`, so the **Authorize** button works out of the box.
+
+### Request hardening
+
+- **CSRF** — cookie mutations must send `X-Requested-With` (the SPA adds it
+  on every fetch); cross-origin `POST/PUT/PATCH/DELETE` without a matching
+  `Host`/`Origin` gets `403`, including `Origin: null`. Bodies are capped
+  (13 MB → `413`). API-key callers are exempt (they don't carry cookies).
+- **Security headers** — `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: no-referrer`, and a
+  lock-down CSP apply to every response.
+- **Docs toggle** — `DOCS_ENABLED=false` removes `/docs`, `/redoc`, and
+  `/openapi.json` from a public deployment.
+
+### Cost governance
+
+Every token-spending path is metered into a Postgres ledger
+(`usage_events`: user, endpoint, model, tokens, estimated spend, latency,
+status), and chat has a budget brake:
+
+- **Pricing** — one table (`app/services/pricing.py`) serves both the
+  runtime ledger and the eval scripts, so a dashboard number and an eval
+  number can never disagree. Unknown models report `null` cost — never a
+  fabricated zero. Requests with unpricable models still log usage.
+- **Budgets** — `USAGE_DAILY_BUDGET_USD` / `USAGE_MONTHLY_BUDGET_USD` are
+  global defaults; admins set per-user overrides from the Users page
+  (`null` = follow global, `0` = disable the window, audit-recorded).
+- **Enforcement** — on `/chat` and `/chat/stream` the budget gate runs
+  **before any model spend**: over the limit is a structured
+  `403 {"code": "usage_limit_exceeded", window, limit_usd, spent_usd}`
+  that costs nothing, and ≥ 80% of a budget adds an `X-Usage-Warn`
+  response header. Both the gate and the ledger are fail-open by design:
+  a database outage degrades governance, never availability.
+- **Visibility** — `GET /usage/me` (own spend/tokens per day + effective
+  budgets) and `GET /admin/usage` (spend ranked by account and model,
+  daily bars) power the Usage pages in the UI.
 
 ## Frontend
 
 A React + Vite + TypeScript single-page UI (Tailwind CSS v4, sidebar
-navigation, no router) with two views:
+navigation, React Router with `/` public landing, `/login`, `/register`,
+guarded `/chat` + `/documents`, and an admin-only `/admin` dashboard) that
+exercises the API above — nothing is served by the backend itself; the Vite
+dev server (:5173) proxies `/api`-style paths to :8000:
 
 - **Chat** — ask questions and watch the answer **stream in live** (SSE
   `meta`/`delta`/`done`; the streamed text is always replaced by the
   server's validated `done.answer`), with expandable source excerpts,
   status chip (grounded vs insufficient evidence), timing, and 👍/👎
   feedback per answer (optimistic toggle, `null` to clear, votes reload
-  with the thread); 401 opens an API-key modal, 429 shows a retry
-  countdown, and a failed stream rolls back the bubble and restores your
-  question. The sidebar lists saved chats with a **New chat** button,
-  resume on click, and inline delete; threads reload from
-  `GET /conversations/{id}` and the first message of a new thread creates
-  the conversation server-side
+  with the thread); 429 shows a retry countdown, a failed stream rolls
+  back the bubble and restores your question. The sidebar lists saved
+  chats with a **New chat** button, resume on click, and inline delete;
+  threads reload from `GET /conversations/{id}` and the first message of
+  a new thread creates the conversation server-side
 - **Documents** — drag-and-drop upload (returns instantly; indexing runs in
   the background and the list auto-refreshes every 2 s while anything is
   pending/processing), duplicate uploads are detected and reported, list
-  with status/chunks/size, view chunked text, delete
+  with status/chunks/size, full-document viewer (rendered Markdown / PDF
+  iframe / text), delete
+- **Admin dashboard** (`/admin`, admin session required) — Overview KPIs,
+  Users (roles, activation, per-user budgets, password resets), Usage
+  (spend charts + by-account/by-model rankings), Feedback inbox, Audit log
 - **Health badge** — polls `/health/ready` every 30 s with dependency details
   on hover
+- **Global UX** — toasts for app-wide events (session expiry → "Session
+  expired" + login redirect; budget refusals stay visible as sticky
+  warnings), loading skeletons for lists/threads, an onboarding checklist
+  in Chat until the first document exists, favicon + meta/theme-color
+  branding, and a dedicated 404 page. Theme (dark by default, light
+  toggle) persists in `localStorage`.
 
 The `/retrieve` endpoint stays API-only (no UI screen): it remains available
 via `/docs` and curl as a retrieval debugging tool.
@@ -378,15 +489,11 @@ via `/docs` and curl as a retrieval debugging tool.
 ```powershell
 cd frontend
 npm install          # once
-npm run dev          # dev server + proxy → :5173
+npm run dev          # dev server + API proxy → :5173 (UI only; backend on :8000)
 npm run typecheck    # tsc --noEmit
-npm test             # vitest (API client, SSE parser, streaming, feedback)
+npm test             # vitest (API client, SSE parser, streaming, auth guards, toasts)
 npm run build        # typecheck + production build to frontend/dist
 ```
-
-The API key (only needed when the server has `API_KEY` set) is stored in
-`localStorage` and sent as `X-API-Key`. The theme (dark by default, light
-toggle in the sidebar) is also persisted in `localStorage`.
 
 ## Evaluation
 
@@ -421,7 +528,7 @@ few cents; retrieval-only runs cost a fraction of a cent.
 | `chat.answerable.grounded_sentence_pct` | Structural groundedness proxy: answer sentences sharing content words with the retrieved evidence. |
 | `chat.errors.rate` | Questions that failed with an error (lower is better). |
 | `chat.latency_ms.*` / `retrieval.latency_ms.*` | Mean stage latencies in milliseconds. |
-| `chat.tokens.*` / `chat.cost_usd.*` | Usage totals; cost is estimated from an approximate static price table in the eval script — production code holds no prices. |
+| `chat.tokens.*` / `chat.cost_usd.*` | Usage totals; cost is estimated from the shared price table in `app/services/pricing.py` — the same single source the runtime usage ledger prices from, so eval and dashboard dollars agree by construction. |
 | `chat.answerable.abstained` | Answerable questions the model declined to answer (over-caution counterweight). |
 
 Every results file carries `generated_at`, `app_version`, `git_commit`, and

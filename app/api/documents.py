@@ -8,6 +8,7 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Request,
     Response,
     UploadFile,
 )
@@ -31,6 +32,7 @@ from app.schemas.documents import (
     UploadDocumentResponse,
 )
 from app.services.answer_cache import invalidate_answer_cache
+from app.services.audit import record_audit
 from app.services.bm25_index import Bm25Error, Bm25Index, get_bm25_index
 from app.services.chunking import chunk_pages
 from app.services.embeddings import Embedder
@@ -166,6 +168,7 @@ async def upload_document(
             embedder=embedder,
             store=store,
             storage=storage,
+            settings=settings,
         )
         record = repositories.get_document(session, failed.id, owner=owner)
         return UploadDocumentResponse(**record.model_dump(), chunks=[])
@@ -194,6 +197,7 @@ async def upload_document(
         embedder=embedder,
         store=store,
         storage=storage,
+        settings=settings,
     )
     record = repositories.get_document(session, document_id)
     logger.info(
@@ -360,6 +364,7 @@ def get_document_file(
 @router.delete("/{document_id}", response_model=DeleteResponse)
 def delete_document(
     document_id: str,
+    request: Request,
     storage: DocumentStorage = Depends(get_storage),
     store: VectorStore = Depends(get_vector_store),
     bm25: Bm25Index = Depends(get_bm25_index),
@@ -405,6 +410,17 @@ def delete_document(
     # Corpus changed: wipe the semantic answer cache (hygiene; the
     # fingerprint check is what actually invalidates stale entries).
     invalidate_answer_cache()
+
+    # Audit after the record is gone (never before: a failed delete must
+    # not claim success in the trail).
+    record_audit(
+        session,
+        request,
+        action="document.delete",
+        target_type="document",
+        target_id=document_id,
+        detail={"filename": record.original_filename},
+    )
 
     try:
         storage.delete(document_id, f".{record.file_type}")

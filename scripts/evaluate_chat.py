@@ -31,6 +31,7 @@ from app.main import APP_VERSION  # noqa: E402
 from app.services.bm25_index import Bm25Index  # noqa: E402
 from app.services.embeddings import Embedder  # noqa: E402
 from app.services.generation import Generator  # noqa: E402
+from app.services.pricing import cost_usd  # noqa: E402 - single price source
 from app.services.retrieval import retrieve_documents  # noqa: E402
 from app.services.vector_store import VectorStore  # noqa: E402
 from scripts.evaluate_retrieval import (  # noqa: E402
@@ -42,11 +43,8 @@ from scripts.evaluate_retrieval import (  # noqa: E402
     DATASET_PATH,
 )
 
-# USD per 1M tokens (approximate OpenAI list prices; update when prices move).
-_PRICES_PER_1M = {
-    "text-embedding-3-small": (0.02, 0.0),
-    "gpt-4o-mini": (0.15, 0.60),
-}
+# USD per 1M tokens now lives in app/services/pricing.py (single source
+# shared with the runtime usage ledger); imported above as cost_usd.
 
 _WORD_RE = re.compile(r"[a-z0-9£]+")
 _STOPWORDS = frozenset(
@@ -100,16 +98,6 @@ def grounded_sentence_pct(answer: str, evidence: str) -> float:
         return 100.0
     grounded = sum(1 for s in sentences if sentence_grounded(s, evidence))
     return round(100.0 * grounded / len(sentences), 1)
-
-
-def cost_usd(model: str, tokens_in: int, tokens_out: int) -> float | None:
-    prices = _PRICES_PER_1M.get(model)
-    if prices is None:
-        return None
-    in_price, out_price = prices
-    return round(
-        tokens_in / 1e6 * in_price + tokens_out / 1e6 * out_price, 6
-    )
 
 
 def _mean(values: list[float]) -> float:
